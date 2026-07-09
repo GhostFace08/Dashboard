@@ -1,0 +1,50 @@
+{
+  "dynatrace": {
+    "issueId": "display_id",
+    "title": "event.nam",
+    "application": "affected_entity",
+    "affectedEntities": "affected_entity_names",
+    "severity": "event.severity",
+    "category": "event.category",
+    "status": "event.status",
+    "startTime": "event.star",
+    "endTime": null,
+    "description": "event.description"
+  },
+  "opmanager": {
+    "issueId": "alarmId",
+    "title": "message",
+    "application": "displayName",
+    "affectedEntities": "deviceName",
+    "severity": "severity",
+    "category": "eventType",
+    "status": "status",
+    "startTime": "modTime",
+    "endTime": null,
+    "description": "message1"
+  },
+  "appdynamics": {
+    "issueId": "id",
+    "title": "name1",
+    "application": "affectedEntityDefinition.name",
+    "affectedEntities": "affectedEntityDefinition",
+    "severity": "severity",
+    "category": "name",
+    "status": "incidentStatus",
+    "startTime": "startTimeInMillis",
+    "endTime": "endTimeInMillis",
+    "description": "name2"
+  },
+  "heal": {
+    "issueId": "id",
+    "title": "signalName",
+    "application": "applicationName",
+    "affectedEntities": "application_Name",
+    "severity": "severity",
+    "category": "metricCategory",
+    "status": "status",
+    "startTime": "startTimeInMillis",
+    "endTime": "endTimeInMillis",
+    "description": "description"
+  }
+}
