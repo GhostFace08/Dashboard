@@ -1,37 +1,31 @@
 /**
  * dashboard.js — Unified MCP Dashboard
  * Depends on: config.js (window.CFG), api.js (window.API), common.js (window.Utils)
- *
- * Changes applied:
- *   Change 1 — Dynamic KPI cards (from payload, no 0-count) + click → popup modal
- *   Change 2 — DataTables for the issues log table
- *   Change 3 — Graph section commented out
- *   Change 4 — Refresh button preserves timer/filters; corrected timestamp semantics
  */
 
 (function () {
   "use strict";
+
+  // jQuery $ and local $ must not conflict — keep jQ alias for DataTables
+  const jQ = window.jQuery || window.$;
 
   document.addEventListener("DOMContentLoaded", async () => {
     Utils.initHeader();
 
     // ─── State ───────────────────────────────────────────────────────────────
     const state = {
-      allIssues:      [],   // normalised, flat IssueRow[]
-      mapping:        {},
-      categoryRules:  [],
-
-      // Derived from payload — drives KPI cards (Change 1)
+      allIssues:           [],
+      mapping:             {},
+      categoryRules:       [],
       availableCategories: [],
 
       activeTool:     "all",
-      timeRange:      "15 min",
+      timeRange:      "7 days",   // default to 7 days so data is visible on load
       customStart:    "",
       customEnd:      "",
 
       statusFilter:   null,
       categoryFilters:[],
-
       globalKeyword:  "",
       tableSearch:    "",
 
@@ -39,26 +33,24 @@
       countdown:      60,
 
       // Timestamps (Change 4)
-      fileModifiedAt: null,   // last-modified from file on disk (from HEAD or fetch)
-      dataUpdatedAt:  null,   // when dashboard last ingested NEW data
-      lastCheckedAt:  null,   // last time a check was attempted
+      fileModifiedAt: null,
+      dataUpdatedAt:  null,
+      lastCheckedAt:  null,
 
-      // DataTables instances (Change 2)
-      dtInstance:     null,
-      kpiDtInstance:  null,
+      // DataTables instances
+      dtInstance:    null,
+      kpiDtInstance: null,
 
-      // Matrix
+      // Current filtered rows — kept in sync so drawCallback always has latest
+      currentFilteredRows: [],
+
       matrixOffset:   0,
       MATRIX_VISIBLE: 6,
 
-      // Sections
       sections: { issueDetails: true, kpis: true },
 
-      // Modal
-      detailRow:  null,
-      copiedId:   null,
-
-      // Guard against overlapping fetches (Change 4)
+      detailRow: null,
+      copiedId:  null,
       isFetching: false,
     };
 
@@ -66,49 +58,51 @@
     const DEFAULT_RANGE_MS = CFG.DEFAULT_RANGE_MS;
     const TIME_RANGE_MS    = CFG.TIME_RANGE_MS;
 
-    // ─── DOM refs ─────────────────────────────────────────────────────────────
-    const $ = id => document.getElementById(id);
-    const errorBanner     = $("error-banner");
-    const errorMsg        = $("error-msg");
-    const statusLeft      = $("status-left");
-    const statusRight     = $("status-right");
-    const filterBar       = $("filter-bar");
-    const filterTags      = $("filter-tags");
-    const globalSearch    = $("global-search");
-    const customStart     = $("custom-start");
-    const customEnd       = $("custom-end");
-    const timeRangeSelect = $("time-range-select");
-    const uiRefreshInput  = $("ui-refresh-input");
-    const toolBtns        = $("tool-btns");
-    const statusCards     = $("status-cards");
-    const kpiCards        = $("kpi-cards");
-    const matrixTable     = $("matrix-table");
-    const matrixLeft      = $("matrix-left");
-    const matrixRight     = $("matrix-right");
-    const detailModal     = $("detail-modal");
-    const modalTitle      = $("modal-title");
-    const modalFields     = $("modal-fields");
-    const modalClose      = $("modal-close");
-    const exportMenu      = $("export-menu");
-    const customRangeInfo = $("custom-range-info");
-    const customRangeErr  = $("custom-range-error");
-    const kpiPopupOverlay = $("kpi-popup-overlay");
-    const kpiPopupTitle   = $("kpi-popup-title");
-    const kpiPopupClose   = $("kpi-popup-close");
-    const btnRefresh      = $("btn-refresh");
-    const btnRefreshLabel = $("btn-refresh-label");
+    // ─── DOM refs — use plain getElementById, never shadow jQuery $ ──────────
+    const byId = id => document.getElementById(id);
+    const errorBanner     = byId("error-banner");
+    const errorMsg        = byId("error-msg");
+    const statusLeft      = byId("status-left");
+    const statusRight     = byId("status-right");
+    const filterBar       = byId("filter-bar");
+    const filterTags      = byId("filter-tags");
+    const globalSearch    = byId("global-search");
+    const customStart     = byId("custom-start");
+    const customEnd       = byId("custom-end");
+    const timeRangeSelect = byId("time-range-select");
+    const uiRefreshInput  = byId("ui-refresh-input");
+    const toolBtns        = byId("tool-btns");
+    const statusCards     = byId("status-cards");
+    const kpiCards        = byId("kpi-cards");
+    const matrixTable     = byId("matrix-table");
+    const matrixLeft      = byId("matrix-left");
+    const matrixRight     = byId("matrix-right");
+    const detailModal     = byId("detail-modal");
+    const modalTitle      = byId("modal-title");
+    const modalFields     = byId("modal-fields");
+    const modalClose      = byId("modal-close");
+    const exportMenu      = byId("export-menu");
+    const customRangeInfo = byId("custom-range-info");
+    const customRangeErr  = byId("custom-range-error");
+    const kpiPopupOverlay = byId("kpi-popup-overlay");
+    const kpiPopupTitle   = byId("kpi-popup-title");
+    const kpiPopupClose   = byId("kpi-popup-close");
+    const btnRefresh      = byId("btn-refresh");
+    const btnRefreshLabel = byId("btn-refresh-label");
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 1. POPULATE STATIC UI ELEMENTS
+    // 1. STATIC UI
     // ═══════════════════════════════════════════════════════════════════════════
 
     CFG.TIME_RANGE_OPTIONS.forEach(opt => {
       const el = document.createElement("option");
       el.value = opt;
       el.textContent = opt;
-      if (opt === "15 min") el.selected = true;
+      if (opt === state.timeRange) el.selected = true;
       timeRangeSelect.appendChild(el);
     });
+    // Sync the select element to state default
+    timeRangeSelect.value = state.timeRange;
 
     CFG.TOOLS.forEach(t => {
       const btn = document.createElement("button");
@@ -138,8 +132,6 @@
       await loadIssues();
     }
 
-    // Change 4: loadIssues sets dataUpdatedAt only when data actually changes.
-    // Preserves filters and does NOT touch the countdown timer.
     async function loadIssues() {
       if (state.isFetching) return;
       state.isFetching = true;
@@ -154,20 +146,15 @@
         hideError();
 
         const rows = Utils.normalizeAllIssues(raw, state.mapping, state.categoryRules);
-
-        // Derive available categories from payload (Change 1)
         state.availableCategories = [...new Set(rows.map(r => r.category).filter(Boolean))];
 
-        // fileModifiedAt: use last-modified from server if available in raw meta,
-        // else derive from the max start timestamp in payload
+        // fileModifiedAt: prefer server meta, fall back to max ts in payload
         if (raw._lastModified) {
           state.fileModifiedAt = new Date(raw._lastModified);
         } else {
           const maxTs = rows.reduce((m, r) => Math.max(m, r.ts || 0), 0);
           state.fileModifiedAt = maxTs ? new Date(maxTs) : new Date();
         }
-
-        // dataUpdatedAt: time we ingested the new data
         state.dataUpdatedAt = new Date();
         state.lastCheckedAt = new Date();
 
@@ -190,23 +177,20 @@
       }
     }
 
-    // Change 4: headCheck — always update lastCheckedAt; only reload if file newer than known fileModifiedAt
     async function headCheck() {
       if (state.isFetching) return;
       try {
         const resp = await fetch("../../backend/data/all_issues.json", { method: "HEAD", cache: "no-store" });
         state.lastCheckedAt = new Date();
-
         const lmStr = resp.headers.get("last-modified");
         if (lmStr) {
           const newTs = new Date(lmStr);
           if (!state.fileModifiedAt || newTs > state.fileModifiedAt) {
-            // New data on disk — load it
             state.fileModifiedAt = newTs;
             await loadIssues();
           }
         }
-      } catch { /* ignore network errors */ }
+      } catch { /* ignore */ }
       updateStatusBar();
     }
 
@@ -268,28 +252,29 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 4. RENDER ORCHESTRATOR
+    // 4. RENDER
     // ═══════════════════════════════════════════════════════════════════════════
 
     function render() {
       const filtered = getFilteredIssues();
+      state.currentFilteredRows = filtered; // keep in sync for drawCallback
       updateStatusBar();
       updateFilterBar();
       updateCustomRangeUI();
       renderStatusCards(filtered);
-      renderKPIs(filtered);         // Change 1
-      // renderGraph(filtered);     // Change 3: commented out
+      renderKPIs(filtered);
+      // graph commented out (Change 3)
       renderMatrix(filtered);
-      renderTableDT(filtered);      // Change 2
+      renderTableDT(filtered);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 5. STATUS BAR (Change 4)
+    // 5. STATUS BAR
     // ═══════════════════════════════════════════════════════════════════════════
 
     function fmt(d) {
       if (!d) return "—";
-      if (typeof d === "string") return d; // raw server string
+      if (typeof d === "string") return d;
       return d.toLocaleString();
     }
 
@@ -299,7 +284,7 @@
         `Last Data Updated At: ${fmt(state.dataUpdatedAt)}`;
       statusRight.innerHTML =
         `Last Data Checked At: ${fmt(state.lastCheckedAt)} &nbsp;|&nbsp; ` +
-        `<span id="countdown-label" style="color:var(--primary)">Next Refresh in: ${state.countdown}s</span>`;
+        `<span style="color:var(--primary)">Next Refresh in: ${state.countdown}s</span>`;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -310,7 +295,6 @@
       const active = state.globalKeyword || state.statusFilter || state.categoryFilters.length > 0 || state.tableSearch;
       filterBar.classList.toggle("hidden", !active);
       if (!active) return;
-
       let html = "";
       if (state.globalKeyword)
         html += `<span class="filter-tag">Search: "${Utils.escapeHtml(state.globalKeyword)}"</span>`;
@@ -332,25 +316,18 @@
       const isCustom = state.timeRange === "Custom";
       customStart.disabled = !isCustom;
       customEnd.disabled   = !isCustom;
-
       if (isCustom) {
         const nowMs  = Date.now();
         const minVal = Utils.toDatetimeLocalValue(new Date(nowMs - MAX_RANGE_MS));
         const maxVal = Utils.toDatetimeLocalValue(new Date(nowMs));
         customStart.min = customEnd.min = minVal;
         customStart.max = customEnd.max = maxVal;
-
         customRangeInfo.textContent =
           `Custom range must fall within the last 168 hours (7 days) — from ${minVal.replace("T"," ")} to ${maxVal.replace("T"," ")}.`;
         customRangeInfo.classList.remove("hidden");
-
         const err = getCustomRangeError();
-        if (err) {
-          customRangeErr.textContent = err;
-          customRangeErr.classList.remove("hidden");
-        } else {
-          customRangeErr.classList.add("hidden");
-        }
+        if (err) { customRangeErr.textContent = err; customRangeErr.classList.remove("hidden"); }
+        else      { customRangeErr.classList.add("hidden"); }
       } else {
         customRangeInfo.classList.add("hidden");
         customRangeErr.classList.add("hidden");
@@ -372,13 +349,11 @@
       const total    = filtered.length;
       const active   = filtered.filter(r => r.status === "Active").length;
       const resolved = filtered.filter(r => r.status === "Resolved").length;
-
       const cards = [
         { label: "Total",    count: total,    breakdown: toolBreakdown(filtered),                                    value: "all"      },
         { label: "Active",   count: active,   breakdown: toolBreakdown(filtered.filter(r => r.status === "Active")),   value: "Active"   },
         { label: "Resolved", count: resolved, breakdown: toolBreakdown(filtered.filter(r => r.status === "Resolved")), value: "Resolved" },
       ];
-
       statusCards.innerHTML = cards.map(c => `
         <button class="status-card${state.statusFilter === c.value ? " selected" : ""}" data-status="${c.value}">
           <span class="status-card-label">${c.label}</span>
@@ -386,7 +361,6 @@
           <span class="status-card-breakdown">${Utils.escapeHtml(c.breakdown)}</span>
         </button>
       `).join("");
-
       statusCards.querySelectorAll(".status-card").forEach(btn => {
         btn.addEventListener("click", () => {
           const val = btn.dataset.status;
@@ -394,21 +368,17 @@
           render();
         });
       });
-
       Utils.refreshIcons();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 9. KPIs — Change 1: dynamic from payload + popup on click
+    // 9. KPIs — dynamic from payload; click opens popup (Change 1)
     // ═══════════════════════════════════════════════════════════════════════════
 
     function renderKPIs(filtered) {
-      // Use categories derived from the live payload; fall back to CFG if not yet loaded
       const sourceCats = state.availableCategories.length
         ? state.availableCategories
         : (CFG.CATEGORIES || []);
-
-      // Only render cards where count > 0 in current filtered view
       const activeCats = sourceCats.filter(cat => filtered.some(r => r.category === cat));
 
       if (activeCats.length === 0) {
@@ -431,28 +401,36 @@
       }).join("");
 
       kpiCards.querySelectorAll(".kpi-card").forEach(btn => {
-        btn.addEventListener("click", () => {
-          openKpiPopup(btn.dataset.cat, filtered);
-        });
+        btn.addEventListener("click", () => openKpiPopup(btn.dataset.cat, filtered));
       });
     }
 
-    // ── KPI Popup (Change 1) ──────────────────────────────────────────────────
+    // ── KPI Popup ─────────────────────────────────────────────────────────────
 
     function openKpiPopup(cat, filtered) {
       const rows = filtered.filter(r => r.category === cat);
       kpiPopupTitle.textContent = `${cat} — ${rows.length} Issue${rows.length !== 1 ? "s" : ""}`;
 
-      // Destroy previous DataTables instance if exists
+      // Destroy previous instance cleanly
       if (state.kpiDtInstance) {
-        state.kpiDtInstance.destroy();
+        state.kpiDtInstance.destroy(true); // true = remove DOM too
         state.kpiDtInstance = null;
-        $("kpi-popup-table").querySelector("tbody").innerHTML = "";
+        // Rebuild clean table skeleton
+        const wrap = byId("kpi-popup-table-wrap");
+        wrap.innerHTML = `
+          <table id="kpi-popup-table" class="data-table display nowrap" style="width:100%">
+            <thead>
+              <tr>
+                <th>Sr. No.</th><th>Source</th><th>Issue ID</th><th>Application</th>
+                <th>Title</th><th>Severity</th><th>Status</th><th>Start Time</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>`;
       }
 
-      // Build row data for popup table (reduced columns)
       const rowData = rows.map(r => {
-        const tool = CFG.TOOL_MAP[r.source] || {};
+        const tool   = CFG.TOOL_MAP[r.source] || {};
         const sevCls = { Critical: "chip-critical", High: "chip-high", Medium: "chip-medium", Low: "chip-low" }[r.severity] || "chip-low";
         const staCls = r.status === "Active" ? "chip-active" : "chip-resolved";
         return [
@@ -467,17 +445,13 @@
         ];
       });
 
-      state.kpiDtInstance = $("#kpi-popup-table").DataTable({
+      // Use jQuery $ (jQ) for DataTables — NOT the local byId alias
+      state.kpiDtInstance = jQ("#kpi-popup-table").DataTable({
         data: rowData,
         columns: [
-          { title: "Sr. No." },
-          { title: "Source" },
-          { title: "Issue ID" },
-          { title: "Application" },
-          { title: "Title" },
-          { title: "Severity" },
-          { title: "Status" },
-          { title: "Start Time" },
+          { title: "Sr. No." }, { title: "Source" }, { title: "Issue ID" },
+          { title: "Application" }, { title: "Title" }, { title: "Severity" },
+          { title: "Status" }, { title: "Start Time" },
         ],
         pageLength: 10,
         lengthMenu: [10, 25, 50],
@@ -508,12 +482,8 @@
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 10. GRAPH — Change 3: COMMENTED OUT
+    // 10. GRAPH — commented out (Change 3)
     // ═══════════════════════════════════════════════════════════════════════════
-    /*
-    function buildGraphData(filtered) { ... }
-    function renderGraph(filtered) { ... }
-    */
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 11. EVALUATION MATRIX
@@ -569,7 +539,7 @@
       html += "</tr></thead><tbody>";
 
       cats.forEach(cat => {
-        const allCols = cols.map(c => cellCounts(filtered, cat, c.app, c.tool));
+        const allCols  = cols.map(c => cellCounts(filtered, cat, c.app, c.tool));
         const catTotal = allCols.reduce((s, x) => s + x.total, 0);
         const catOpen  = allCols.reduce((s, x) => s + x.open,  0);
 
@@ -579,10 +549,9 @@
         visible.forEach(c => {
           const { open, total } = cellCounts(filtered, cat, c.app, c.tool);
           const closed = Math.max(0, total - open);
-          const bg      = open > 0 ? "#fde2e1" : total > 0 ? "#f3f4f6" : "#e6f9ed";
-          const fg      = (open > 0 || total > 0) ? "#111827" : "#065f46";
-          const display = `${closed}\\${open}\\${total}`;
-          html += `<td class="matrix-cell" style="background:${bg};color:${fg}">${display}</td>`;
+          const bg = open > 0 ? "#fde2e1" : total > 0 ? "#f3f4f6" : "#e6f9ed";
+          const fg = (open > 0 || total > 0) ? "#111827" : "#065f46";
+          html += `<td class="matrix-cell" style="background:${bg};color:${fg}">${closed}\\${open}\\${total}</td>`;
         });
         html += "</tr>";
       });
@@ -592,33 +561,28 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 12. TABLE — Change 2: DataTables
+    // 12. TABLE — DataTables (Change 2)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function renderTableDT(filtered) {
-      const rows = filtered;
-
-      // Build row data array for DataTables
-      const rowData = rows.map(r => {
+    function buildRowData(rows) {
+      return rows.map(r => {
         const tool   = CFG.TOOL_MAP[r.source] || {};
         const sevCls = { Critical: "chip-critical", High: "chip-high", Medium: "chip-medium", Low: "chip-low" }[r.severity] || "chip-low";
         const staCls = r.status === "Active" ? "chip-active" : "chip-resolved";
-
         return [
-          r.srNo,                                                                                                  // 0  Sr. No.
-          `<span style="font-family:var(--font-mono);font-size:11px;font-weight:500;color:${tool.color || "var(--foreground)"};white-space:nowrap">${Utils.escapeHtml(tool.name || r.source)}</span>`, // 1
-          `<span style="font-family:var(--font-mono);font-size:11px;color:var(--primary);white-space:nowrap">${Utils.escapeHtml(r.issueId)}</span>`,                                                  // 2
-          `<span style="font-family:var(--font-mono);font-size:11px;white-space:nowrap">${Utils.escapeHtml(r.application)}</span>`,                                                                    // 3
-          Utils.escapeHtml(r.title),                                                                              // 4
-          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground)">${Utils.escapeHtml(r.affectedEntities)}</span>`,                                                    // 5
-          `<span class="chip ${sevCls}">${Utils.escapeHtml(r.severity)}</span>`,                                  // 6
-          `<span style="font-family:var(--font-sans);font-size:11px">${Utils.escapeHtml(r.category)}</span>`,    // 7
-          `<span style="font-size:11px">${Utils.escapeHtml(r.description)}</span>`,                               // 8
-          `<span class="chip ${staCls}">${Utils.escapeHtml(r.status)}</span>`,                                   // 9
-          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.startTime)}</span>`,  // 10
-          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.endTime)}</span>`,    // 11
-          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.duration)}</span>`,   // 12
-          // Action cell
+          r.srNo,
+          `<span style="font-family:var(--font-mono);font-size:11px;font-weight:500;color:${tool.color || "var(--foreground)"};white-space:nowrap">${Utils.escapeHtml(tool.name || r.source)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:11px;color:var(--primary);white-space:nowrap">${Utils.escapeHtml(r.issueId)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:11px;white-space:nowrap">${Utils.escapeHtml(r.application)}</span>`,
+          Utils.escapeHtml(r.title),
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground)">${Utils.escapeHtml(r.affectedEntities)}</span>`,
+          `<span class="chip ${sevCls}">${Utils.escapeHtml(r.severity)}</span>`,
+          `<span style="font-family:var(--font-sans);font-size:11px">${Utils.escapeHtml(r.category)}</span>`,
+          `<span style="font-size:11px">${Utils.escapeHtml(r.description)}</span>`,
+          `<span class="chip ${staCls}">${Utils.escapeHtml(r.status)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.startTime)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.endTime)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.duration)}</span>`,
           `<div class="action-cell">
             <button class="btn-icon copy-btn" data-copy="${Utils.escapeHtml(r.id)}" title="Copy issue details">
               <i data-lucide="copy" style="width:14px;height:14px"></i>
@@ -626,39 +590,40 @@
             <a href="${Utils.escapeHtml(tool.url || "#")}" target="_blank" rel="noopener" class="btn-icon" title="Open in tool" onclick="event.stopPropagation()">
               <i data-lucide="external-link" style="width:14px;height:14px"></i>
             </a>
-          </div>`,                                                                                                 // 13
-          r.id,  // 14 — hidden, used for row-click
+          </div>`,
+          r.id,  // col 14 — hidden
         ];
       });
+    }
+
+    function renderTableDT(filtered) {
+      const rowData = buildRowData(filtered);
 
       if (state.dtInstance) {
-        // Reload data in-place — preserves pagination position and sort
         state.dtInstance.clear().rows.add(rowData).draw(false);
-        // Re-bind copy buttons and row clicks after redraw
-        bindTableEvents(rows);
-        Utils.refreshIcons();
+        // drawCallback uses state.currentFilteredRows which is always fresh
         return;
       }
 
-      // First initialisation
-      state.dtInstance = $("#issues-table").DataTable({
+      // First init — use jQuery jQ, not byId
+      state.dtInstance = jQ("#issues-table").DataTable({
         data: rowData,
         columns: [
-          { title: "Sr. No.",          width: "60px"  },
-          { title: "Source",           width: "100px" },
-          { title: "Issue ID",         width: "110px" },
-          { title: "Application",      width: "120px" },
-          { title: "Title",            width: "180px" },
-          { title: "Affected Entities",width: "130px" },
-          { title: "Severity",         width: "90px"  },
-          { title: "Category",         width: "130px" },
-          { title: "Description",      width: "180px" },
-          { title: "Status",           width: "90px"  },
-          { title: "Start Time",       width: "130px" },
-          { title: "End Time",         width: "130px" },
-          { title: "Duration",         width: "90px"  },
-          { title: "Action",           orderable: false, width: "80px" },
-          { title: "_id",              visible: false },
+          { title: "Sr. No.",           width: "60px"  },
+          { title: "Source",            width: "100px" },
+          { title: "Issue ID",          width: "110px" },
+          { title: "Application",       width: "120px" },
+          { title: "Title",             width: "180px" },
+          { title: "Affected Entities", width: "130px" },
+          { title: "Severity",          width: "90px"  },
+          { title: "Category",          width: "130px" },
+          { title: "Description",       width: "180px" },
+          { title: "Status",            width: "90px"  },
+          { title: "Start Time",        width: "130px" },
+          { title: "End Time",          width: "130px" },
+          { title: "Duration",          width: "90px"  },
+          { title: "Action",            orderable: false, width: "80px" },
+          { title: "_id",               visible: false },
         ],
         pageLength: 10,
         lengthMenu: [10, 25, 50, 100],
@@ -666,29 +631,26 @@
         scrollX: true,
         autoWidth: false,
         language: {
-          emptyTable: "No issues found.",
-          info: "Showing _START_ to _END_ of _TOTAL_ entries",
-          infoEmpty: "No entries",
+          emptyTable:   "No issues found.",
+          info:         "Showing _START_ to _END_ of _TOTAL_ entries",
+          infoEmpty:    "No entries",
           infoFiltered: "(filtered from _MAX_ total)",
-          search: "Table filter:",
-          lengthMenu: "Show _MENU_ entries",
-          paginate: { first: "«", last: "»", next: "›", previous: "‹" },
+          search:       "Table filter:",
+          lengthMenu:   "Show _MENU_ entries",
+          paginate:     { first: "«", last: "»", next: "›", previous: "‹" },
         },
-        drawCallback: function() {
-          bindTableEvents(rows);
+        drawCallback: function () {
+          // Always read from state.currentFilteredRows — never a stale closure
+          bindTableEvents(state.currentFilteredRows);
           Utils.refreshIcons();
         },
       });
-
-      // Wire the external global search to DataTables search
-      // (DataTables also has its own search box but we keep the global one driving it)
     }
 
     function bindTableEvents(allRows) {
-      // Row click → detail modal
       document.querySelectorAll("#issues-table tbody tr").forEach(tr => {
         tr.style.cursor = "pointer";
-        tr.addEventListener("click", function(e) {
+        tr.addEventListener("click", function (e) {
           if (e.target.closest(".action-cell")) return;
           const dtRow = state.dtInstance.row(tr).data();
           if (!dtRow) return;
@@ -698,7 +660,6 @@
         });
       });
 
-      // Copy buttons
       document.querySelectorAll("#issues-table .copy-btn").forEach(btn => {
         btn.addEventListener("click", e => {
           e.stopPropagation();
@@ -730,12 +691,10 @@
     }
 
     function getExportRows() {
-      if (!state.dtInstance) return [];
-      return state.dtInstance.rows({ search: "applied" }).data().toArray()
-        .map(dtRow => {
-          const id = dtRow[14];
-          return getFilteredIssues().find(r => r.id === id);
-        }).filter(Boolean);
+      if (!state.dtInstance) return getFilteredIssues();
+      const ids = state.dtInstance.rows({ search: "applied" }).data().toArray().map(d => d[14]);
+      const lookup = new Map(getFilteredIssues().map(r => [r.id, r]));
+      return ids.map(id => lookup.get(id)).filter(Boolean);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -759,14 +718,12 @@
         { label: "Title",             value: row.title,            full: true  },
         { label: "Description",       value: row.description,      full: true  },
       ];
-
       modalFields.innerHTML = fields.map(f => `
         <div class="modal-field${f.full ? " full" : ""}">
           <span class="modal-field-label">${Utils.escapeHtml(f.label)}</span>
           <span class="modal-field-value">${Utils.escapeHtml(f.value || "—")}</span>
         </div>
       `).join("");
-
       detailModal.classList.remove("hidden");
       document.body.classList.add("modal-open");
     }
@@ -783,13 +740,13 @@
     // 14. EXPORT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    $("btn-export").addEventListener("click", e => {
+    byId("btn-export").addEventListener("click", e => {
       e.stopPropagation();
       exportMenu.classList.toggle("hidden");
     });
     document.addEventListener("click", () => exportMenu.classList.add("hidden"));
 
-    $("export-csv").addEventListener("click", () => {
+    byId("export-csv").addEventListener("click", () => {
       const rows = getExportRows();
       const hdrs = ["Sr.No","Source","Issue ID","Application","Title","Affected Entities","Severity","Category","Description","Status","Start Time","End Time","Duration"];
       const lines = rows.map(r =>
@@ -799,12 +756,12 @@
       );
       const blob = new Blob([[hdrs.join(","), ...lines].join("\n")], { type: "text/csv" });
       const url  = URL.createObjectURL(blob);
-      const a    = Object.assign(document.createElement("a"), { href: url, download: "issues.csv" });
-      a.click(); URL.revokeObjectURL(url);
+      Object.assign(document.createElement("a"), { href: url, download: "issues.csv" }).click();
+      URL.revokeObjectURL(url);
       exportMenu.classList.add("hidden");
     });
 
-    $("export-excel").addEventListener("click", () => {
+    byId("export-excel").addEventListener("click", () => {
       const rows = getExportRows();
       const hdrs = ["Sr.No","Source","Issue ID","Application","Title","Affected Entities","Severity","Category","Description","Status","Start Time","End Time","Duration"];
       const trs  = rows.map(r =>
@@ -815,8 +772,8 @@
       const html = `<table><tr>${hdrs.map(h => `<th>${h}</th>`).join("")}</tr>${trs}</table>`;
       const blob = new Blob([html], { type: "application/vnd.ms-excel" });
       const url  = URL.createObjectURL(blob);
-      const a    = Object.assign(document.createElement("a"), { href: url, download: "issues.xls" });
-      a.click(); URL.revokeObjectURL(url);
+      Object.assign(document.createElement("a"), { href: url, download: "issues.xls" }).click();
+      URL.revokeObjectURL(url);
       exportMenu.classList.add("hidden");
     });
 
@@ -824,29 +781,25 @@
     // 15. EVENT WIRING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Global search (debounced) — drives DataTables search
     globalSearch.addEventListener("input", Utils.debounce(e => {
       state.globalKeyword = e.target.value;
       render();
     }, 250));
 
-    // Time range
     timeRangeSelect.addEventListener("change", e => {
       state.timeRange = e.target.value;
       render();
     });
 
-    // Custom date pickers
     customStart.addEventListener("change", e => { state.customStart = e.target.value; render(); });
     customEnd.addEventListener("change",   e => { state.customEnd   = e.target.value; render(); });
 
-    // Tool buttons
-    $("tool-all").addEventListener("click", () => setActiveTool("all"));
+    byId("tool-all").addEventListener("click", () => setActiveTool("all"));
 
     function setActiveTool(toolId) {
       state.activeTool = toolId;
-      $("tool-all").classList.toggle("active", toolId === "all");
-      const check = $("tool-all-check");
+      byId("tool-all").classList.toggle("active", toolId === "all");
+      const check = byId("tool-all-check");
       if (check) check.style.display = toolId === "all" ? "" : "none";
       document.querySelectorAll(".tool-btn[data-tool]").forEach(btn => {
         const t = CFG.TOOL_MAP[btn.dataset.tool];
@@ -867,27 +820,23 @@
       render();
     }
 
-    // Clear filters
-    $("btn-clear-filters").addEventListener("click", clearAllFilters);
+    byId("btn-clear-filters").addEventListener("click", clearAllFilters);
 
-    // Change 4: Refresh button — re-fetch data only; timer and filters untouched
+    // Change 4: refresh data only — timer and filters untouched
     btnRefresh.addEventListener("click", async () => {
       await loadIssues();
-      // Timer (countdownTimer) is intentionally NOT reset here.
-      // Filters are intentionally NOT cleared here.
     });
 
-    // UI Refresh interval input
     uiRefreshInput.addEventListener("change", e => {
       state.uiRefreshMin = Math.max(1, parseInt(e.target.value) || 1);
       resetCountdown();
     });
 
-    // Collapsible section toggles
+    // Section toggles — fix regex: use literal \w not \\w
     ["issue-details", "kpis"].forEach(id => {
-      const key = id.replace(/-(\\w)/g, (_, c) => c.toUpperCase());
-      const btn  = $(`toggle-${id}`);
-      const body = $(`${id}-body`);
+      const key  = id.replace(/-([a-z])/g, (_, c) => c.toUpperCase()); // camelCase without regex escape bug
+      const btn  = byId(`toggle-${id}`);
+      const body = byId(`${id}-body`);
       if (!btn || !body) return;
       btn.addEventListener("click", () => {
         state.sections[key] = !state.sections[key];
@@ -897,7 +846,6 @@
       });
     });
 
-    // Matrix navigation
     matrixLeft.addEventListener("click",  () => { state.matrixOffset = Math.max(0, state.matrixOffset - 1); renderMatrix(getFilteredIssues()); });
     matrixRight.addEventListener("click", () => { state.matrixOffset++; renderMatrix(getFilteredIssues()); });
 
@@ -907,14 +855,12 @@
 
     let countdownTimer = null;
 
-    // resetCountdown is called only on initial boot and when the user changes the
-    // UI Refresh interval — NOT on manual refresh (Change 4).
     function resetCountdown() {
       state.countdown = Math.max(1, state.uiRefreshMin) * 60;
       if (countdownTimer) clearInterval(countdownTimer);
       countdownTimer = setInterval(() => {
         state.countdown--;
-        updateStatusBar();
+        updateStatusBar(); // direct DOM write — no recreation of interval-breaking elements
         if (state.countdown <= 0) {
           state.countdown = Math.max(1, state.uiRefreshMin) * 60;
           // Refresh durations for Active issues
@@ -927,7 +873,6 @@
       }, 1000);
     }
 
-    // Change 4: Periodic HEAD check driven by config value (not hardcoded 60s)
     const headCheckInterval = (CFG.SETTINGS_DEFAULTS?.periodicCheckTime ?? 30) * 1000;
     setInterval(headCheck, headCheckInterval);
 
@@ -941,10 +886,7 @@
       state.categoryFilters = [];
       state.tableSearch     = "";
       globalSearch.value    = "";
-      // Clear DataTables internal search
-      if (state.dtInstance) {
-        state.dtInstance.search("").draw(false);
-      }
+      if (state.dtInstance) state.dtInstance.search("").draw(false);
       render();
     }
 

@@ -1,45 +1,45 @@
 {
   "dynatrace": {
     "issueId": "display_id",
-    "title": "event.nam",
-    "application": "affected_entity",
-    "affectedEntities": "affected_entity_names",
+    "title": "event.name",
+    "application": "affected_entity_names[0]",
+    "affectedEntities": "smartscape.affected_entity.ids[0]",
     "severity": "event.severity",
     "category": "event.category",
     "status": "event.status",
-    "startTime": "event.star",
+    "startTime": "event.start",
     "endTime": null,
     "description": "event.description"
   },
   "opmanager": {
     "issueId": "alarmId",
-    "title": "message",
+    "title": "eventType",
     "application": "displayName",
     "affectedEntities": "deviceName",
     "severity": "severity",
-    "category": "eventType",
+    "category": "category",
     "status": "status",
     "startTime": "modTime",
     "endTime": null,
-    "description": "message1"
+    "description": "message"
   },
   "appdynamics": {
     "issueId": "id",
-    "title": "name1",
+    "title": null,
     "application": "affectedEntityDefinition.name",
-    "affectedEntities": "affectedEntityDefinition",
+    "affectedEntities": "affectedEntityDefinition.entityId",
     "severity": "severity",
-    "category": "name",
+    "category": "affectedEntityDefinition.entityType",
     "status": "incidentStatus",
     "startTime": "startTimeInMillis",
-    "endTime": "endTimeInMillis",
-    "description": "name2"
+    "endTime": "detectedTimeInMillis",
+    "description": "name"
   },
   "heal": {
     "issueId": "id",
     "title": "signalName",
     "application": "applicationName",
-    "affectedEntities": "application_Name",
+    "affectedEntities": "accountName",
     "severity": "severity",
     "category": "metricCategory",
     "status": "status",
