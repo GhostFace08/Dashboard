@@ -1,21 +1,23 @@
 /**
  * ai_chat.js — AI Chat page logic
  *
- * FIX #3: initHeader() called without arguments (auto-detects from pathname).
+ * Change 5: initHeader() is now a no-op when this page runs inside the SPA
+ *   shell iframe (window !== top).  The call is kept so the page still works
+ *   when opened directly in development (standalone mode).
  *
- * CURRENT BEHAVIOUR:
- *   postChat() always returns CFG.CHAT_FALLBACK_REPLY immediately.
- *   No backend call is made. One TODO comment marks where to wire it.
+ * Change 6: Session persistence within a browser session.
+ *   Problem:  Before the SPA shell, navigating away from AI Chat and back
+ *   caused a full page reload, wiping the in-memory sessions array and
+ *   activeId.  With the shell the iframe is never destroyed, so sessions
+ *   already survive tab switches at the JS-variable level.
+ *   Addition:  lastMessagedSessionId tracks the session the user most
+ *   recently *sent a message in*.  onTabActivated() — called by the shell
+ *   each time this tab becomes visible — restores activeId to that session
+ *   (if it still exists), ensuring the user lands back in the right chat
+ *   even if some other code path (e.g. createNewSession called from outside)
+ *   changed activeId while the tab was hidden.
  *
- * FEATURES:
- *   - Multi-session sidebar (pinned-first, then createdAt desc)
- *   - Session operations: create / rename (prompt) / pin-toggle / delete (confirm)
- *   - File attachments: display chips, pass metadata in message object
- *   - Auto-growing textarea (Shift+Enter = newline, Enter = send)
- *   - Thinking dots shown while "waiting" for reply
- *   - Markdown-lite renderer: **bold**, blank line → spacer, otherwise plain para
- *   - Context-menu (pin / rename / delete) positioned absolutely, closes on outside click
- *   - State held entirely in memory; no localStorage
+ * All other logic is unchanged from the original file.
  *
  * DEPENDENCIES (must load before this file):
  *   config.js  → window.CFG
@@ -42,6 +44,18 @@
   let pendingFiles   = [];
   let isSending      = false;
   let openMenuId     = null;
+
+  /*
+   * Change 6 — lastMessagedSessionId
+   *
+   * Set to the session id each time sendMessage() successfully appends the
+   * user's message to a session (before the API call completes).  This means
+   * it always reflects where the user was actively chatting.
+   *
+   * onTabActivated() (below) uses it to restore activeId when the shell
+   * brings this tab back into view.
+   */
+  let lastMessagedSessionId = null;
 
   /* ─── Tiny helpers ───────────────────────────────────────────────────────── */
   function el(id) { return document.getElementById(id); }
@@ -301,8 +315,8 @@
   function togglePinSession(id) {
     const s = getSession(id);
     if (!s) return;
-    s.pinned    = !s.pinned;
-    s.pinnedAt  = s.pinned ? Date.now() : null;
+    s.pinned   = !s.pinned;
+    s.pinnedAt = s.pinned ? Date.now() : null;
     renderSessionList();
     closeContextMenu();
   }
@@ -314,6 +328,10 @@
     sessions = sessions.filter(x => x.id !== id);
     if (activeId === id) {
       activeId = sessions.length ? sortedSessions()[0].id : null;
+    }
+    /* If the deleted session was the last-messaged one, clear the tracker */
+    if (lastMessagedSessionId === id) {
+      lastMessagedSessionId = null;
     }
     render();
     closeContextMenu();
@@ -389,6 +407,13 @@
     }
     session.preview = text || session.preview;
     session.messages.push(userMsg, thinkMsg);
+
+    /*
+     * Change 6 — record which session the user last actively messaged.
+     * Recorded here (before the await) so it is set even if the API call
+     * fails — the user is definitively in this session.
+     */
+    lastMessagedSessionId = activeId;
 
     renderMessages();
     renderSessionList();
@@ -540,8 +565,8 @@
     const sendBtn = el("btn-send");
     if (sendBtn) sendBtn.addEventListener("click", () => sendMessage());
 
-    const attachBtn  = el("btn-attach");
-    const fileInput  = el("file-input");
+    const attachBtn = el("btn-attach");
+    const fileInput = el("file-input");
     if (attachBtn && fileInput) {
       attachBtn.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", handleFileInput);
@@ -554,29 +579,60 @@
 
   document.addEventListener("DOMContentLoaded", () => {
 
-    /* 1. Shared header — FIX #3: no argument, auto-detects from pathname */
+    /*
+     * Shared header — safe to call even inside an iframe.
+     * common.js detects (window !== top) and returns immediately when running
+     * inside the SPA shell, so this is a no-op in production and correctly
+     * renders the header when the page is opened directly in development.
+     */
     if (global.Utils && typeof global.Utils.initHeader === "function") {
       global.Utils.initHeader();
     }
 
-    /* 2. Stamp static lucide icons */
+    /* Stamp static lucide icons */
     if (global.lucide) global.lucide.createIcons();
 
-    /* 3. Set default active session to first pinned, then first overall */
+    /* Set default active session to first pinned, then first overall */
     const sorted = sortedSessions();
     activeId = sorted.length ? sorted[0].id : null;
 
-    /* 4. Initial render */
+    /* Initial render */
     render();
 
-    /* 5. Wire all interactions */
+    /* Wire all interactions */
     wireEvents();
   });
 
-  /* ─── Public surface (debug) ─────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════
+     Change 6 — onTabActivated()
+
+     Called by the SPA shell (index.html / Shell.showTab) each time the
+     AI Chat tab becomes visible.
+
+     Behaviour:
+       • If the user last sent a message in a session that still exists,
+         restore activeId to that session and re-render so the conversation
+         is always visible when they return to this tab.
+       • If lastMessagedSessionId is null (no message ever sent, or that
+         session was deleted), leave activeId as-is — don't disrupt whatever
+         session the sidebar was already showing.
+       • The isFirstActivation argument is accepted but not used here; the
+         restore logic should run on every activation, not just the first.
+  ═══════════════════════════════════════════════════════════════════════════ */
+  global.onTabActivated = function onTabActivated(/* isFirstActivation */) {
+    if (lastMessagedSessionId && getSession(lastMessagedSessionId)) {
+      if (activeId !== lastMessagedSessionId) {
+        activeId = lastMessagedSessionId;
+        render();
+      }
+    }
+  };
+
+  /* ─── Public surface (debug + shell integration) ─────────────────────────── */
   global.AIC = {
     getSessions:  () => sessions,
     getActiveId:  () => activeId,
+    getLastMessagedSessionId: () => lastMessagedSessionId,
     createChat:   createNewSession,
     sendMessage:  sendMessage,
   };
