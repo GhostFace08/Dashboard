@@ -462,3 +462,145 @@ html.dark .matrix-table td { border-color: rgba(255,255,255,.12); }
 }
 /* modal-overlay uses .hidden toggled by JS — must be explicit */
 .modal-overlay.hidden { display: none !important; }
+/* =============================================================================
+   ADDITIONS — Changes 1, 2 (KPI popup + DataTables theme)
+   ============================================================================= */
+
+/* ── KPI Popup Modal (Change 1) ──────────────────────────────────────────── */
+.kpi-popup-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  width: min(90vw, 920px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,.4);
+  overflow: hidden;
+}
+
+.kpi-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.kpi-popup-title-text {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.kpi-popup-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ── DataTables dark-theme overrides (Change 2) ──────────────────────────── */
+table.dataTable thead th,
+table.dataTable thead td {
+  background: var(--secondary) !important;
+  color: var(--foreground) !important;
+  border-bottom: 1px solid var(--border) !important;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 10px 12px;
+  white-space: nowrap;
+}
+
+table.dataTable tbody tr {
+  background: var(--card) !important;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition);
+}
+
+table.dataTable tbody tr:hover {
+  background: var(--secondary) !important;
+}
+
+table.dataTable tbody td {
+  color: var(--foreground);
+  padding: 9px 12px;
+  vertical-align: middle;
+  font-size: 12px;
+}
+
+div.dt-container {
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+div.dt-container .dt-length,
+div.dt-container .dt-search {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+div.dt-container .dt-search input,
+div.dt-container .dt-length select {
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  outline: none;
+  margin: 0 4px;
+}
+
+div.dt-container .dt-search input:focus,
+div.dt-container .dt-length select:focus {
+  border-color: rgba(99,102,241,.5);
+}
+
+div.dt-container .dt-info {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+div.dt-container .dt-paging .dt-paging-button {
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--foreground) !important;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin: 0 2px;
+  transition: all var(--transition);
+}
+
+div.dt-container .dt-paging .dt-paging-button:hover {
+  background: var(--card);
+  border-color: rgba(99,102,241,.5);
+}
+
+div.dt-container .dt-paging .dt-paging-button.current {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground) !important;
+}
+
+div.dt-container .dt-paging .dt-paging-button.disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+
+table.dataTable.no-footer { border-bottom: 1px solid var(--border); }
+
+/* Sorting column highlight */
+table.dataTable thead th.dt-ordering-asc .dt-column-order::before,
+table.dataTable thead th.dt-ordering-desc .dt-column-order::after {
+  opacity: 1;
+  color: var(--primary);
+}

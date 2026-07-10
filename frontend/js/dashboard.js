@@ -2,68 +2,64 @@
  * dashboard.js — Unified MCP Dashboard
  * Depends on: config.js (window.CFG), api.js (window.API), common.js (window.Utils)
  *
- * On load:
- *   1. Init header + theme
- *   2. Fetch mapping.json + category.json from API
- *   3. Fetch all_issues.json from API, normalise via Utils
- *   4. Build UI: status cards, KPIs, graph, evaluation matrix, issues table
- *   5. Wire all interactive controls
+ * Changes applied:
+ *   Change 1 — Dynamic KPI cards (from payload, no 0-count) + click → popup modal
+ *   Change 2 — DataTables for the issues log table
+ *   Change 3 — Graph section commented out
+ *   Change 4 — Refresh button preserves timer/filters; corrected timestamp semantics
  */
 
 (function () {
   "use strict";
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 0. WAIT FOR DOM
-  // ═══════════════════════════════════════════════════════════════════════════
   document.addEventListener("DOMContentLoaded", async () => {
     Utils.initHeader();
 
     // ─── State ───────────────────────────────────────────────────────────────
     const state = {
       allIssues:      [],   // normalised, flat IssueRow[]
-      mapping:        {},   // from mapping.json
-      categoryRules:  [],   // from category.json
+      mapping:        {},
+      categoryRules:  [],
+
+      // Derived from payload — drives KPI cards (Change 1)
+      availableCategories: [],
 
       activeTool:     "all",
       timeRange:      "15 min",
       customStart:    "",
       customEnd:      "",
 
-      statusFilter:   null,        // null | "all" | "Active" | "Resolved"
-      categoryFilters:[],          // Category[]
+      statusFilter:   null,
+      categoryFilters:[],
 
       globalKeyword:  "",
       tableSearch:    "",
 
-      sortCol:        "srNo",
-      sortDir:        "asc",
-      pageSize:       10,
-      currentPage:    1,
-
       uiRefreshMin:   1,
       countdown:      60,
 
-      // Timestamps
-      fileModified:   null,
-      fileUpdated:    null,
-      fileChecked:    null,
+      // Timestamps (Change 4)
+      fileModifiedAt: null,   // last-modified from file on disk (from HEAD or fetch)
+      dataUpdatedAt:  null,   // when dashboard last ingested NEW data
+      lastCheckedAt:  null,   // last time a check was attempted
 
-      // Chart instance
-      chartInstance:  null,
+      // DataTables instances (Change 2)
+      dtInstance:     null,
+      kpiDtInstance:  null,
 
-      // Matrix sliding window
+      // Matrix
       matrixOffset:   0,
       MATRIX_VISIBLE: 6,
 
-      // Sections open/closed
-      sections: { issueDetails: true, kpis: true, graph: true },
+      // Sections
+      sections: { issueDetails: true, kpis: true },
 
       // Modal
-      detailRow: null,
+      detailRow:  null,
+      copiedId:   null,
 
-      // Copied row id
-      copiedId: null,
+      // Guard against overlapping fetches (Change 4)
+      isFetching: false,
     };
 
     const MAX_RANGE_MS     = CFG.MAX_RANGE_MS;
@@ -76,11 +72,9 @@
     const errorMsg        = $("error-msg");
     const statusLeft      = $("status-left");
     const statusRight     = $("status-right");
-    const countdownLabel  = $("countdown-label");
     const filterBar       = $("filter-bar");
     const filterTags      = $("filter-tags");
     const globalSearch    = $("global-search");
-    const tableSearch     = $("table-search");
     const customStart     = $("custom-start");
     const customEnd       = $("custom-end");
     const timeRangeSelect = $("time-range-select");
@@ -88,14 +82,9 @@
     const toolBtns        = $("tool-btns");
     const statusCards     = $("status-cards");
     const kpiCards        = $("kpi-cards");
-    const graphSubtitle   = $("graph-subtitle");
-    const issuesTbody     = $("issues-tbody");
-    const tableCount      = $("table-count");
-    const pagination      = $("pagination");
     const matrixTable     = $("matrix-table");
     const matrixLeft      = $("matrix-left");
     const matrixRight     = $("matrix-right");
-    const showEntries     = $("show-entries");
     const detailModal     = $("detail-modal");
     const modalTitle      = $("modal-title");
     const modalFields     = $("modal-fields");
@@ -103,12 +92,16 @@
     const exportMenu      = $("export-menu");
     const customRangeInfo = $("custom-range-info");
     const customRangeErr  = $("custom-range-error");
+    const kpiPopupOverlay = $("kpi-popup-overlay");
+    const kpiPopupTitle   = $("kpi-popup-title");
+    const kpiPopupClose   = $("kpi-popup-close");
+    const btnRefresh      = $("btn-refresh");
+    const btnRefreshLabel = $("btn-refresh-label");
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 1. POPULATE STATIC UI ELEMENTS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Time range options
     CFG.TIME_RANGE_OPTIONS.forEach(opt => {
       const el = document.createElement("option");
       el.value = opt;
@@ -117,7 +110,6 @@
       timeRangeSelect.appendChild(el);
     });
 
-    // Tool buttons
     CFG.TOOLS.forEach(t => {
       const btn = document.createElement("button");
       btn.className = "tool-btn";
@@ -137,45 +129,84 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     async function loadAllData() {
-      // Load mapping + categories in parallel, then issues
       const [mappingRaw, categoryRaw] = await Promise.all([
         API.getConfig("mapping.json"),
         API.getConfig("category.json"),
       ]);
-
       try { state.mapping = JSON.parse(mappingRaw) || {}; } catch { state.mapping = CFG.DEFAULT_MAPPING || {}; }
       try { state.categoryRules = JSON.parse(categoryRaw) || []; } catch { state.categoryRules = CFG.DEFAULT_CATEGORY_RULES || []; }
-
       await loadIssues();
     }
 
+    // Change 4: loadIssues sets dataUpdatedAt only when data actually changes.
+    // Preserves filters and does NOT touch the countdown timer.
     async function loadIssues() {
-      const raw = await API.getIssues();
-      if (!raw || !Array.isArray(raw.allIssues)) {
-        showError("Failed to load issues — backend returned no data.");
-        return;
+      if (state.isFetching) return;
+      state.isFetching = true;
+      setRefreshBusy(true);
+
+      try {
+        const raw = await API.getIssues();
+        if (!raw || !Array.isArray(raw.allIssues)) {
+          showError("Failed to load issues — backend returned no data.");
+          return;
+        }
+        hideError();
+
+        const rows = Utils.normalizeAllIssues(raw, state.mapping, state.categoryRules);
+
+        // Derive available categories from payload (Change 1)
+        state.availableCategories = [...new Set(rows.map(r => r.category).filter(Boolean))];
+
+        // fileModifiedAt: use last-modified from server if available in raw meta,
+        // else derive from the max start timestamp in payload
+        if (raw._lastModified) {
+          state.fileModifiedAt = new Date(raw._lastModified);
+        } else {
+          const maxTs = rows.reduce((m, r) => Math.max(m, r.ts || 0), 0);
+          state.fileModifiedAt = maxTs ? new Date(maxTs) : new Date();
+        }
+
+        // dataUpdatedAt: time we ingested the new data
+        state.dataUpdatedAt = new Date();
+        state.lastCheckedAt = new Date();
+
+        state.allIssues = rows;
+        render();
+      } finally {
+        state.isFetching = false;
+        setRefreshBusy(false);
       }
-      hideError();
-      const rows = Utils.normalizeAllIssues(raw, state.mapping, state.categoryRules);
-
-      // Compute max start timestamp → "Last Data Loaded At"
-      const maxTs = rows.reduce((m, r) => Math.max(m, r.ts || 0), 0);
-      state.fileUpdated  = new Date();
-      state.fileModified = maxTs ? new Date(maxTs) : state.fileUpdated;
-
-      state.allIssues = rows;
-      state.currentPage = 1;
-      render();
     }
 
-    // Periodic HEAD check for file changes
+    function setRefreshBusy(busy) {
+      if (!btnRefresh) return;
+      btnRefresh.disabled = busy;
+      if (btnRefreshLabel) btnRefreshLabel.textContent = busy ? "Loading…" : "Refresh";
+      const icon = btnRefresh.querySelector("i[data-lucide]");
+      if (icon) {
+        icon.dataset.lucide = busy ? "loader" : "refresh-cw";
+        Utils.refreshIcons();
+      }
+    }
+
+    // Change 4: headCheck — always update lastCheckedAt; only reload if file newer than known fileModifiedAt
     async function headCheck() {
+      if (state.isFetching) return;
       try {
         const resp = await fetch("../../backend/data/all_issues.json", { method: "HEAD", cache: "no-store" });
-        state.fileChecked = new Date();
-        const lm = resp.headers.get("last-modified");
-        if (lm) state.fileModified = new Date(lm);
-      } catch { /* ignore */ }
+        state.lastCheckedAt = new Date();
+
+        const lmStr = resp.headers.get("last-modified");
+        if (lmStr) {
+          const newTs = new Date(lmStr);
+          if (!state.fileModifiedAt || newTs > state.fileModifiedAt) {
+            // New data on disk — load it
+            state.fileModifiedAt = newTs;
+            await loadIssues();
+          }
+        }
+      } catch { /* ignore network errors */ }
       updateStatusBar();
     }
 
@@ -246,22 +277,28 @@
       updateFilterBar();
       updateCustomRangeUI();
       renderStatusCards(filtered);
-      renderKPIs(filtered);
-      renderGraph(filtered);
+      renderKPIs(filtered);         // Change 1
+      // renderGraph(filtered);     // Change 3: commented out
       renderMatrix(filtered);
-      renderTable(filtered);
+      renderTableDT(filtered);      // Change 2
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 5. STATUS BAR
+    // 5. STATUS BAR (Change 4)
     // ═══════════════════════════════════════════════════════════════════════════
+
+    function fmt(d) {
+      if (!d) return "—";
+      if (typeof d === "string") return d; // raw server string
+      return d.toLocaleString();
+    }
 
     function updateStatusBar() {
       statusLeft.innerHTML =
-        `Last Data Modified At: ${Utils.formatHeaderDate(state.fileModified)} &nbsp;|&nbsp; ` +
-        `Last Data Updated At: ${Utils.formatHeaderDate(state.fileUpdated)}`;
+        `Last Data Modified At: ${fmt(state.fileModifiedAt)} &nbsp;|&nbsp; ` +
+        `Last Data Updated At: ${fmt(state.dataUpdatedAt)}`;
       statusRight.innerHTML =
-        `Last Data Checked At: ${Utils.formatHeaderDate(state.fileChecked)} &nbsp;|&nbsp; ` +
+        `Last Data Checked At: ${fmt(state.lastCheckedAt)} &nbsp;|&nbsp; ` +
         `<span id="countdown-label" style="color:var(--primary)">Next Refresh in: ${state.countdown}s</span>`;
     }
 
@@ -337,7 +374,7 @@
       const resolved = filtered.filter(r => r.status === "Resolved").length;
 
       const cards = [
-        { label: "Total",    count: total,    breakdown: toolBreakdown(filtered),                             value: "all"      },
+        { label: "Total",    count: total,    breakdown: toolBreakdown(filtered),                                    value: "all"      },
         { label: "Active",   count: active,   breakdown: toolBreakdown(filtered.filter(r => r.status === "Active")),   value: "Active"   },
         { label: "Resolved", count: resolved, breakdown: toolBreakdown(filtered.filter(r => r.status === "Resolved")), value: "Resolved" },
       ];
@@ -354,7 +391,6 @@
         btn.addEventListener("click", () => {
           const val = btn.dataset.status;
           state.statusFilter = state.statusFilter === val ? null : val;
-          state.currentPage = 1;
           render();
         });
       });
@@ -363,138 +399,121 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 9. KPIS
+    // 9. KPIs — Change 1: dynamic from payload + popup on click
     // ═══════════════════════════════════════════════════════════════════════════
 
     function renderKPIs(filtered) {
-      kpiCards.innerHTML = CFG.CATEGORIES.map(cat => {
+      // Use categories derived from the live payload; fall back to CFG if not yet loaded
+      const sourceCats = state.availableCategories.length
+        ? state.availableCategories
+        : (CFG.CATEGORIES || []);
+
+      // Only render cards where count > 0 in current filtered view
+      const activeCats = sourceCats.filter(cat => filtered.some(r => r.category === cat));
+
+      if (activeCats.length === 0) {
+        kpiCards.innerHTML = `<span style="font-family:var(--font-mono);font-size:11px;color:var(--muted-foreground)">No categories in current view.</span>`;
+        return;
+      }
+
+      kpiCards.innerHTML = activeCats.map(cat => {
         const catRows  = filtered.filter(r => r.category === cat);
         const count    = catRows.length;
         const critical = catRows.filter(r => r.severity === "Critical").length;
-        const errors   = catRows.filter(r => r.category === "Application Error").length;
-        const selected = state.categoryFilters.includes(cat);
+        const high     = catRows.filter(r => r.severity === "High").length;
         return `
-          <button class="kpi-card${selected ? " selected" : ""}" data-cat="${Utils.escapeHtml(cat)}">
+          <button class="kpi-card" data-cat="${Utils.escapeHtml(cat)}">
             <span class="kpi-label">${Utils.escapeHtml(cat)}</span>
             <span class="kpi-count">${count}</span>
-            <span class="kpi-meta">Critical ${critical} | Error ${errors}</span>
+            <span class="kpi-meta">Critical ${critical} | High ${high}</span>
           </button>
         `;
       }).join("");
 
       kpiCards.querySelectorAll(".kpi-card").forEach(btn => {
         btn.addEventListener("click", () => {
-          const cat = btn.dataset.cat;
-          if (state.categoryFilters.includes(cat)) {
-            state.categoryFilters = state.categoryFilters.filter(c => c !== cat);
-          } else {
-            state.categoryFilters = [...state.categoryFilters, cat];
-          }
-          state.currentPage = 1;
-          render();
+          openKpiPopup(btn.dataset.cat, filtered);
         });
       });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 10. GRAPH
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ── KPI Popup (Change 1) ──────────────────────────────────────────────────
 
-    function buildGraphData(filtered) {
-      const { startMs, endMs } = getActiveWindow();
-      const spanMs = Math.max(0, endMs - startMs);
-      const hourly = spanMs <= 24 * 3600 * 1000;
-      const bucketMs = hourly ? 3600 * 1000 : 24 * 3600 * 1000;
+    function openKpiPopup(cat, filtered) {
+      const rows = filtered.filter(r => r.category === cat);
+      kpiPopupTitle.textContent = `${cat} — ${rows.length} Issue${rows.length !== 1 ? "s" : ""}`;
 
-      const startDate = new Date(startMs);
-      if (hourly) startDate.setMinutes(0, 0, 0);
-      else startDate.setHours(0, 0, 0, 0);
-
-      const buckets = [];
-      for (let t = startDate.getTime(); t <= endMs; t += bucketMs) buckets.push(t);
-      if (!buckets.length) buckets.push(startDate.getTime());
-
-      return buckets.map((bucketStart, i) => {
-        const bucketEnd = i === buckets.length - 1 ? endMs : buckets[i + 1] - 1;
-        const bi = filtered.filter(r => r.ts >= bucketStart && r.ts <= bucketEnd);
-        const row = {
-          time: hourly
-            ? new Date(bucketStart).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
-            : new Date(bucketStart).toLocaleDateString("en-GB", { weekday: "short" }),
-          total: bi.length,
-        };
-        CFG.TOOLS.forEach(t => { row[t.id] = bi.filter(r => r.source === t.id).length; });
-        return row;
-      });
-    }
-
-    function renderGraph(filtered) {
-      const toolName = state.activeTool === "all" ? "All Sources" : (CFG.TOOL_MAP[state.activeTool]?.name || state.activeTool);
-      graphSubtitle.textContent = `${toolName} · ${state.timeRange}`;
-
-      const data = buildGraphData(filtered);
-      const labels  = data.map(d => d.time);
-      const totals  = state.activeTool === "all"
-        ? data.map(d => d.total)
-        : data.map(d => d[state.activeTool] || 0);
-
-      const canvas = $("issues-chart");
-      if (!canvas) return;
-
-      if (state.chartInstance) {
-        // Update in-place — never recreate
-        state.chartInstance.data.labels = labels;
-        state.chartInstance.data.datasets[0].data = totals;
-        state.chartInstance.update();
-        return;
+      // Destroy previous DataTables instance if exists
+      if (state.kpiDtInstance) {
+        state.kpiDtInstance.destroy();
+        state.kpiDtInstance = null;
+        $("kpi-popup-table").querySelector("tbody").innerHTML = "";
       }
 
-      // First render — create chart
-      state.chartInstance = new Chart(canvas, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [{
-            label: "Total",
-            data: totals,
-            borderColor: "#6366f1",
-            backgroundColor: "rgba(99,102,241,.1)",
-            borderWidth: 2,
-            pointBackgroundColor: "#6366f1",
-            pointRadius: 4,
-            tension: 0.3,
-          }],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode: "index", intersect: false },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              backgroundColor: "var(--card)",
-              titleColor: "var(--foreground)",
-              bodyColor: "var(--muted-foreground)",
-              borderColor: "var(--border)",
-              borderWidth: 1,
-              titleFont: { family: "'JetBrains Mono', monospace", size: 12, weight: "600" },
-              bodyFont:  { family: "'JetBrains Mono', monospace", size: 10 },
-            },
-          },
-          scales: {
-            x: {
-              grid: { color: "rgba(127,127,127,.15)" },
-              ticks: { color: "var(--muted-foreground)", font: { family: "'JetBrains Mono', monospace", size: 10 } },
-            },
-            y: {
-              grid: { color: "rgba(127,127,127,.15)" },
-              ticks: { color: "var(--muted-foreground)", font: { family: "'JetBrains Mono', monospace", size: 10 } },
-              title: { display: true, text: "Count", color: "var(--muted-foreground)", font: { size: 10 } },
-            },
-          },
+      // Build row data for popup table (reduced columns)
+      const rowData = rows.map(r => {
+        const tool = CFG.TOOL_MAP[r.source] || {};
+        const sevCls = { Critical: "chip-critical", High: "chip-high", Medium: "chip-medium", Low: "chip-low" }[r.severity] || "chip-low";
+        const staCls = r.status === "Active" ? "chip-active" : "chip-resolved";
+        return [
+          r.srNo,
+          `<span style="font-family:var(--font-mono);font-size:11px;font-weight:500;color:${tool.color || "var(--foreground)"}">${Utils.escapeHtml(tool.name || r.source)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:11px;color:var(--primary)">${Utils.escapeHtml(r.issueId)}</span>`,
+          Utils.escapeHtml(r.application),
+          Utils.escapeHtml(r.title),
+          `<span class="chip ${sevCls}">${Utils.escapeHtml(r.severity)}</span>`,
+          `<span class="chip ${staCls}">${Utils.escapeHtml(r.status)}</span>`,
+          `<span style="font-family:var(--font-mono);font-size:10px">${Utils.escapeHtml(r.startTime)}</span>`,
+        ];
+      });
+
+      state.kpiDtInstance = $("#kpi-popup-table").DataTable({
+        data: rowData,
+        columns: [
+          { title: "Sr. No." },
+          { title: "Source" },
+          { title: "Issue ID" },
+          { title: "Application" },
+          { title: "Title" },
+          { title: "Severity" },
+          { title: "Status" },
+          { title: "Start Time" },
+        ],
+        pageLength: 10,
+        lengthMenu: [10, 25, 50],
+        order: [],
+        autoWidth: false,
+        scrollX: true,
+        language: {
+          emptyTable: "No issues in this category.",
+          info: "Showing _START_ to _END_ of _TOTAL_ issues",
+          infoEmpty: "No issues",
+          search: "Filter:",
         },
       });
+
+      kpiPopupOverlay.classList.remove("hidden");
+      document.body.classList.add("modal-open");
+      Utils.refreshIcons();
     }
+
+    function closeKpiPopup() {
+      kpiPopupOverlay.classList.add("hidden");
+      document.body.classList.remove("modal-open");
+    }
+
+    kpiPopupClose.addEventListener("click", closeKpiPopup);
+    kpiPopupOverlay.addEventListener("click", e => {
+      if (e.target === kpiPopupOverlay) closeKpiPopup();
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 10. GRAPH — Change 3: COMMENTED OUT
+    // ═══════════════════════════════════════════════════════════════════════════
+    /*
+    function buildGraphData(filtered) { ... }
+    function renderGraph(filtered) { ... }
+    */
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 11. EVALUATION MATRIX
@@ -530,7 +549,8 @@
     }
 
     function renderMatrix(filtered) {
-      const cols = buildMatrixCols(filtered);
+      const cats = state.availableCategories.length ? state.availableCategories : (CFG.CATEGORIES || []);
+      const cols    = buildMatrixCols(filtered);
       const visible = cols.slice(state.matrixOffset, state.matrixOffset + state.MATRIX_VISIBLE);
 
       matrixLeft.disabled  = state.matrixOffset === 0;
@@ -542,20 +562,16 @@
       }
 
       let html = "<thead>";
-      // Row 1: Application names
       html += `<tr><th class="cat-col" rowspan="2">CATEGORY /<br>APPLICATIONS</th>`;
       visible.forEach(c => { html += `<th>${Utils.escapeHtml(c.app)}</th>`; });
-      html += "</tr>";
-      // Row 2: Source names
-      html += "<tr>";
+      html += "</tr><tr>";
       visible.forEach(c => { html += `<th>${Utils.escapeHtml(c.toolName)}</th>`; });
       html += "</tr></thead><tbody>";
 
-      CFG.CATEGORIES.forEach(cat => {
-        // Category total across all cols (not just visible) for sidebar label
+      cats.forEach(cat => {
         const allCols = cols.map(c => cellCounts(filtered, cat, c.app, c.tool));
-        const catTotal   = allCols.reduce((s, x) => s + x.total, 0);
-        const catOpen    = allCols.reduce((s, x) => s + x.open,  0);
+        const catTotal = allCols.reduce((s, x) => s + x.total, 0);
+        const catOpen  = allCols.reduce((s, x) => s + x.open,  0);
 
         html += `<tr><td class="cat-col" style="font-family:var(--font-mono);font-size:11px">${Utils.escapeHtml(cat)}<br>
           <span style="font-size:10px;color:#555">${catOpen}/${catTotal}</span></td>`;
@@ -576,158 +592,150 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 12. TABLE
+    // 12. TABLE — Change 2: DataTables
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function getSortedFiltered(filtered) {
-      let rows = [...filtered];
+    function renderTableDT(filtered) {
+      const rows = filtered;
 
-      // Apply table search on top of global filter
-      if (state.tableSearch) {
-        const ts = state.tableSearch.toLowerCase();
-        rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(ts)));
-      }
+      // Build row data array for DataTables
+      const rowData = rows.map(r => {
+        const tool   = CFG.TOOL_MAP[r.source] || {};
+        const sevCls = { Critical: "chip-critical", High: "chip-high", Medium: "chip-medium", Low: "chip-low" }[r.severity] || "chip-low";
+        const staCls = r.status === "Active" ? "chip-active" : "chip-resolved";
 
-      rows.sort((a, b) => {
-        const dir = state.sortDir === "asc" ? 1 : -1;
-        if (state.sortCol === "startTime") return (a.ts - b.ts) * dir;
-        if (state.sortCol === "endTime")   return ((a.endTs ?? a.ts) - (b.endTs ?? b.ts)) * dir;
-        if (state.sortCol === "duration")  return (((a.endTs ?? Date.now()) - a.ts) - ((b.endTs ?? Date.now()) - b.ts)) * dir;
-        const av = String(a[state.sortCol] ?? "");
-        const bv = String(b[state.sortCol] ?? "");
-        return av.localeCompare(bv, undefined, { numeric: true }) * dir;
+        return [
+          r.srNo,                                                                                                  // 0  Sr. No.
+          `<span style="font-family:var(--font-mono);font-size:11px;font-weight:500;color:${tool.color || "var(--foreground)"};white-space:nowrap">${Utils.escapeHtml(tool.name || r.source)}</span>`, // 1
+          `<span style="font-family:var(--font-mono);font-size:11px;color:var(--primary);white-space:nowrap">${Utils.escapeHtml(r.issueId)}</span>`,                                                  // 2
+          `<span style="font-family:var(--font-mono);font-size:11px;white-space:nowrap">${Utils.escapeHtml(r.application)}</span>`,                                                                    // 3
+          Utils.escapeHtml(r.title),                                                                              // 4
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground)">${Utils.escapeHtml(r.affectedEntities)}</span>`,                                                    // 5
+          `<span class="chip ${sevCls}">${Utils.escapeHtml(r.severity)}</span>`,                                  // 6
+          `<span style="font-family:var(--font-sans);font-size:11px">${Utils.escapeHtml(r.category)}</span>`,    // 7
+          `<span style="font-size:11px">${Utils.escapeHtml(r.description)}</span>`,                               // 8
+          `<span class="chip ${staCls}">${Utils.escapeHtml(r.status)}</span>`,                                   // 9
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.startTime)}</span>`,  // 10
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.endTime)}</span>`,    // 11
+          `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(r.duration)}</span>`,   // 12
+          // Action cell
+          `<div class="action-cell">
+            <button class="btn-icon copy-btn" data-copy="${Utils.escapeHtml(r.id)}" title="Copy issue details">
+              <i data-lucide="copy" style="width:14px;height:14px"></i>
+            </button>
+            <a href="${Utils.escapeHtml(tool.url || "#")}" target="_blank" rel="noopener" class="btn-icon" title="Open in tool" onclick="event.stopPropagation()">
+              <i data-lucide="external-link" style="width:14px;height:14px"></i>
+            </a>
+          </div>`,                                                                                                 // 13
+          r.id,  // 14 — hidden, used for row-click
+        ];
       });
 
-      return rows;
+      if (state.dtInstance) {
+        // Reload data in-place — preserves pagination position and sort
+        state.dtInstance.clear().rows.add(rowData).draw(false);
+        // Re-bind copy buttons and row clicks after redraw
+        bindTableEvents(rows);
+        Utils.refreshIcons();
+        return;
+      }
+
+      // First initialisation
+      state.dtInstance = $("#issues-table").DataTable({
+        data: rowData,
+        columns: [
+          { title: "Sr. No.",          width: "60px"  },
+          { title: "Source",           width: "100px" },
+          { title: "Issue ID",         width: "110px" },
+          { title: "Application",      width: "120px" },
+          { title: "Title",            width: "180px" },
+          { title: "Affected Entities",width: "130px" },
+          { title: "Severity",         width: "90px"  },
+          { title: "Category",         width: "130px" },
+          { title: "Description",      width: "180px" },
+          { title: "Status",           width: "90px"  },
+          { title: "Start Time",       width: "130px" },
+          { title: "End Time",         width: "130px" },
+          { title: "Duration",         width: "90px"  },
+          { title: "Action",           orderable: false, width: "80px" },
+          { title: "_id",              visible: false },
+        ],
+        pageLength: 10,
+        lengthMenu: [10, 25, 50, 100],
+        order: [[0, "asc"]],
+        scrollX: true,
+        autoWidth: false,
+        language: {
+          emptyTable: "No issues found.",
+          info: "Showing _START_ to _END_ of _TOTAL_ entries",
+          infoEmpty: "No entries",
+          infoFiltered: "(filtered from _MAX_ total)",
+          search: "Table filter:",
+          lengthMenu: "Show _MENU_ entries",
+          paginate: { first: "«", last: "»", next: "›", previous: "‹" },
+        },
+        drawCallback: function() {
+          bindTableEvents(rows);
+          Utils.refreshIcons();
+        },
+      });
+
+      // Wire the external global search to DataTables search
+      // (DataTables also has its own search box but we keep the global one driving it)
     }
 
-    function renderTable(filtered) {
-      const rows = getSortedFiltered(filtered);
-      const total = rows.length;
-      const ps    = state.pageSize;
-      const totalPages = Math.max(1, Math.ceil(total / ps));
-      state.currentPage = Math.min(state.currentPage, totalPages);
-
-      const start = (state.currentPage - 1) * ps;
-      const page  = rows.slice(start, start + ps);
-
-      // Update sort arrow indicators in thead
-      document.querySelectorAll("#issues-table thead th[data-col]").forEach(th => {
-        const col = th.dataset.col;
-        const icon = th.querySelector("i[data-lucide]");
-        if (!icon) return;
-        if (col === state.sortCol) {
-          icon.dataset.lucide = state.sortDir === "asc" ? "arrow-up" : "arrow-down";
-          icon.style.opacity = "1";
-          icon.style.color = "var(--primary)";
-        } else {
-          icon.dataset.lucide = "arrow-up-down";
-          icon.style.opacity = ".3";
-          icon.style.color = "";
-        }
+    function bindTableEvents(allRows) {
+      // Row click → detail modal
+      document.querySelectorAll("#issues-table tbody tr").forEach(tr => {
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", function(e) {
+          if (e.target.closest(".action-cell")) return;
+          const dtRow = state.dtInstance.row(tr).data();
+          if (!dtRow) return;
+          const id  = dtRow[14];
+          const row = allRows.find(r => r.id === id);
+          if (row) openDetailModal(row);
+        });
       });
 
-      // Table body
-      if (page.length === 0) {
-        issuesTbody.innerHTML = `<tr><td colspan="14" class="table-empty">No issues found.</td></tr>`;
-      } else {
-        issuesTbody.innerHTML = page.map(row => {
-          const tool = CFG.TOOL_MAP[row.source] || {};
-          const sevCls = { Critical: "chip-critical", High: "chip-high", Medium: "chip-medium", Low: "chip-low" }[row.severity] || "chip-low";
-          const staCls = row.status === "Active" ? "chip-active" : "chip-resolved";
-          const copied = state.copiedId === row.id;
-          return `
-            <tr data-id="${Utils.escapeHtml(row.id)}" style="cursor:pointer">
-              <td style="font-family:var(--font-mono);font-size:11px;color:var(--muted-foreground)">${row.srNo}</td>
-              <td style="font-family:var(--font-mono);font-size:11px;font-weight:500;color:${tool.color || "var(--foreground)"};white-space:nowrap">
-                ${Utils.escapeHtml(tool.name || row.source)}
-              </td>
-              <td style="font-family:var(--font-mono);font-size:11px;color:var(--primary);white-space:nowrap">
-                ${Utils.escapeHtml(row.issueId)}
-              </td>
-              <td style="font-family:var(--font-mono);font-size:11px;white-space:nowrap">${Utils.escapeHtml(row.application)}</td>
-              <td>${Utils.escapeHtml(row.title)}</td>
-              <td style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground)">${Utils.escapeHtml(row.affectedEntities)}</td>
-              <td><span class="chip ${sevCls}">${Utils.escapeHtml(row.severity)}</span></td>
-              <td style="font-family:var(--font-sans);font-size:11px;white-space:nowrap">${Utils.escapeHtml(row.category)}</td>
-              <td style="font-size:11px">${Utils.escapeHtml(row.description)}</td>
-              <td><span class="chip ${staCls}">${Utils.escapeHtml(row.status)}</span></td>
-              <td style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(row.startTime)}</td>
-              <td style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(row.endTime)}</td>
-              <td style="font-family:var(--font-mono);font-size:10px;color:var(--muted-foreground);white-space:nowrap">${Utils.escapeHtml(row.duration)}</td>
-              <td onclick="event.stopPropagation()">
-                <div class="action-cell">
-                  <button class="btn-icon copy-btn${copied ? " copied" : ""}" data-copy="${Utils.escapeHtml(row.id)}" title="Copy issue details">
-                    <i data-lucide="${copied ? "check" : "copy"}" style="width:14px;height:14px"></i>
-                  </button>
-                  <a href="${Utils.escapeHtml(tool.url || "#")}" target="_blank" rel="noopener" class="btn-icon" title="Open in tool" onclick="event.stopPropagation()">
-                    <i data-lucide="external-link" style="width:14px;height:14px"></i>
-                  </a>
-                </div>
-              </td>
-            </tr>
-          `;
-        }).join("");
-
-        // Row click → detail modal
-        issuesTbody.querySelectorAll("tr[data-id]").forEach(tr => {
-          tr.addEventListener("click", () => {
-            const id = tr.dataset.id;
-            const row = rows.find(r => r.id === id);
-            if (row) openDetailModal(row);
+      // Copy buttons
+      document.querySelectorAll("#issues-table .copy-btn").forEach(btn => {
+        btn.addEventListener("click", e => {
+          e.stopPropagation();
+          const id  = btn.dataset.copy;
+          const row = allRows.find(r => r.id === id);
+          if (!row) return;
+          const text = [
+            `Issue ID: ${row.issueId}`,
+            `Source: ${CFG.TOOL_MAP[row.source]?.name || row.source}`,
+            `Application: ${row.application}`,
+            `Title: ${row.title}`,
+            `Severity: ${row.severity}`,
+            `Category: ${row.category}`,
+            `Status: ${row.status}`,
+            `Description: ${row.description}`,
+            `Start: ${row.startTime} | End: ${row.endTime} | Duration: ${row.duration}`,
+          ].join("\n");
+          navigator.clipboard.writeText(text).then(() => {
+            btn.classList.add("copied");
+            const icon = btn.querySelector("i[data-lucide]");
+            if (icon) { icon.dataset.lucide = "check"; Utils.refreshIcons(); }
+            setTimeout(() => {
+              btn.classList.remove("copied");
+              if (icon) { icon.dataset.lucide = "copy"; Utils.refreshIcons(); }
+            }, 1500);
           });
         });
-
-        // Copy buttons
-        issuesTbody.querySelectorAll(".copy-btn").forEach(btn => {
-          btn.addEventListener("click", e => {
-            e.stopPropagation();
-            const id  = btn.dataset.copy;
-            const row = rows.find(r => r.id === id);
-            if (!row) return;
-            const text = [
-              `Issue ID: ${row.issueId}`,
-              `Source: ${CFG.TOOL_MAP[row.source]?.name || row.source}`,
-              `Application: ${row.application}`,
-              `Title: ${row.title}`,
-              `Severity: ${row.severity}`,
-              `Category: ${row.category}`,
-              `Status: ${row.status}`,
-              `Description: ${row.description}`,
-              `Start: ${row.startTime} | End: ${row.endTime} | Duration: ${row.duration}`,
-            ].join("\n");
-            navigator.clipboard.writeText(text).then(() => {
-              state.copiedId = id;
-              setTimeout(() => { state.copiedId = null; renderTable(filtered); }, 1500);
-              renderTable(filtered);
-            });
-          });
-        });
-      }
-
-      // Pagination count
-      tableCount.textContent = total === 0
-        ? "No entries"
-        : `Showing ${start + 1}–${Math.min(start + ps, total)} of ${total} entries`;
-
-      // Pagination buttons
-      renderPagination(totalPages);
-
-      Utils.refreshIcons();
+      });
     }
 
-    function renderPagination(totalPages) {
-      let html = "";
-      for (let p = 1; p <= totalPages; p++) {
-        html += `<button class="page-btn${p === state.currentPage ? " active" : ""}" data-page="${p}">${p}</button>`;
-      }
-      pagination.innerHTML = html;
-      pagination.querySelectorAll(".page-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-          state.currentPage = Number(btn.dataset.page);
-          renderTable(getFilteredIssues());
-        });
-      });
+    function getExportRows() {
+      if (!state.dtInstance) return [];
+      return state.dtInstance.rows({ search: "applied" }).data().toArray()
+        .map(dtRow => {
+          const id = dtRow[14];
+          return getFilteredIssues().find(r => r.id === id);
+        }).filter(Boolean);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -760,10 +768,12 @@
       `).join("");
 
       detailModal.classList.remove("hidden");
+      document.body.classList.add("modal-open");
     }
 
     function closeDetailModal() {
       detailModal.classList.add("hidden");
+      document.body.classList.remove("modal-open");
     }
 
     detailModal.addEventListener("click", closeDetailModal);
@@ -772,10 +782,6 @@
     // ═══════════════════════════════════════════════════════════════════════════
     // 14. EXPORT
     // ═══════════════════════════════════════════════════════════════════════════
-
-    function getExportRows() {
-      return getSortedFiltered(getFilteredIssues());
-    }
 
     $("btn-export").addEventListener("click", e => {
       e.stopPropagation();
@@ -818,97 +824,69 @@
     // 15. EVENT WIRING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Global search (debounced)
+    // Global search (debounced) — drives DataTables search
     globalSearch.addEventListener("input", Utils.debounce(e => {
       state.globalKeyword = e.target.value;
-      state.currentPage = 1;
       render();
-    }, 250));
-
-    // Table search
-    tableSearch.addEventListener("input", Utils.debounce(e => {
-      state.tableSearch = e.target.value;
-      state.currentPage = 1;
-      renderTable(getFilteredIssues());
-      updateFilterBar();
     }, 250));
 
     // Time range
     timeRangeSelect.addEventListener("change", e => {
       state.timeRange = e.target.value;
-      state.currentPage = 1;
       render();
     });
 
     // Custom date pickers
-    customStart.addEventListener("change", e => { state.customStart = e.target.value; state.currentPage = 1; render(); });
-    customEnd.addEventListener("change",   e => { state.customEnd   = e.target.value; state.currentPage = 1; render(); });
+    customStart.addEventListener("change", e => { state.customStart = e.target.value; render(); });
+    customEnd.addEventListener("change",   e => { state.customEnd   = e.target.value; render(); });
 
     // Tool buttons
     $("tool-all").addEventListener("click", () => setActiveTool("all"));
 
     function setActiveTool(toolId) {
       state.activeTool = toolId;
-      // Update tool button active states
       $("tool-all").classList.toggle("active", toolId === "all");
-      const check = document.getElementById("tool-all-check");
+      const check = $("tool-all-check");
       if (check) check.style.display = toolId === "all" ? "" : "none";
       document.querySelectorAll(".tool-btn[data-tool]").forEach(btn => {
         const t = CFG.TOOL_MAP[btn.dataset.tool];
         const isActive = btn.dataset.tool === toolId;
         btn.classList.toggle("active", isActive);
         if (t && isActive) {
-          btn.style.borderColor  = t.color + "70";
-          btn.style.background   = t.color + "22";
-          btn.style.boxShadow    = `0 0 0 1px ${t.color}30`;
-          btn.style.color        = t.color;
+          btn.style.borderColor = t.color + "70";
+          btn.style.background  = t.color + "22";
+          btn.style.boxShadow   = `0 0 0 1px ${t.color}30`;
+          btn.style.color       = t.color;
         } else if (t) {
-          btn.style.borderColor  = "";
-          btn.style.background   = "rgba(255,255,255,.02)";
-          btn.style.boxShadow    = "";
-          btn.style.color        = "";
+          btn.style.borderColor = "";
+          btn.style.background  = "rgba(255,255,255,.02)";
+          btn.style.boxShadow   = "";
+          btn.style.color       = "";
         }
       });
-      state.currentPage = 1;
       render();
     }
-
-    // Show entries
-    showEntries.addEventListener("change", e => {
-      state.pageSize = Number(e.target.value);
-      state.currentPage = 1;
-      renderTable(getFilteredIssues());
-    });
-
-    // Previous / Next page buttons
-    $("btn-prev").addEventListener("click", () => {
-      if (state.currentPage > 1) { state.currentPage--; renderTable(getFilteredIssues()); }
-    });
-    $("btn-next").addEventListener("click", () => {
-      const total = Math.max(1, Math.ceil(getSortedFiltered(getFilteredIssues()).length / state.pageSize));
-      if (state.currentPage < total) { state.currentPage++; renderTable(getFilteredIssues()); }
-    });
 
     // Clear filters
     $("btn-clear-filters").addEventListener("click", clearAllFilters);
 
-    // Refresh button
-    $("btn-refresh").addEventListener("click", () => {
-      clearAllFilters();
-      loadIssues();
-      resetCountdown();
+    // Change 4: Refresh button — re-fetch data only; timer and filters untouched
+    btnRefresh.addEventListener("click", async () => {
+      await loadIssues();
+      // Timer (countdownTimer) is intentionally NOT reset here.
+      // Filters are intentionally NOT cleared here.
     });
 
-    // UI Refresh interval
+    // UI Refresh interval input
     uiRefreshInput.addEventListener("change", e => {
       state.uiRefreshMin = Math.max(1, parseInt(e.target.value) || 1);
       resetCountdown();
     });
 
     // Collapsible section toggles
-    ["issue-details", "kpis", "graph"].forEach(id => {
-      const key = id.replace(/-(\w)/g, (_, c) => c.toUpperCase()); // camelCase
-      const btn = $(`toggle-${id}`);
+    ["issue-details", "kpis"].forEach(id => {
+      const key = id.replace(/-(\\w)/g, (_, c) => c.toUpperCase());
+      const btn  = $(`toggle-${id}`);
       const body = $(`${id}-body`);
       if (!btn || !body) return;
       btn.addEventListener("click", () => {
@@ -919,31 +897,18 @@
       });
     });
 
-    // Table header sort
-    document.querySelectorAll("#issues-table thead th[data-col]").forEach(th => {
-      th.addEventListener("click", () => {
-        const col = th.dataset.col;
-        if (state.sortCol === col) {
-          state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
-        } else {
-          state.sortCol = col;
-          state.sortDir = "asc";
-        }
-        state.currentPage = 1;
-        renderTable(getFilteredIssues());
-      });
-    });
-
     // Matrix navigation
     matrixLeft.addEventListener("click",  () => { state.matrixOffset = Math.max(0, state.matrixOffset - 1); renderMatrix(getFilteredIssues()); });
     matrixRight.addEventListener("click", () => { state.matrixOffset++; renderMatrix(getFilteredIssues()); });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 16. COUNTDOWN + PERIODIC REFRESH
+    // 16. COUNTDOWN + PERIODIC REFRESH (Change 4)
     // ═══════════════════════════════════════════════════════════════════════════
 
     let countdownTimer = null;
 
+    // resetCountdown is called only on initial boot and when the user changes the
+    // UI Refresh interval — NOT on manual refresh (Change 4).
     function resetCountdown() {
       state.countdown = Math.max(1, state.uiRefreshMin) * 60;
       if (countdownTimer) clearInterval(countdownTimer);
@@ -953,7 +918,6 @@
         if (state.countdown <= 0) {
           state.countdown = Math.max(1, state.uiRefreshMin) * 60;
           // Refresh durations for Active issues
-          const now = Date.now();
           state.allIssues = state.allIssues.map(r => {
             if (r.status !== "Active" || !r.ts) return r;
             return { ...r, duration: Utils.formatDuration(new Date(r.ts), null) };
@@ -963,31 +927,29 @@
       }, 1000);
     }
 
-    // Periodic HEAD check every 60s
-    setInterval(headCheck, 60000);
+    // Change 4: Periodic HEAD check driven by config value (not hardcoded 60s)
+    const headCheckInterval = (CFG.SETTINGS_DEFAULTS?.periodicCheckTime ?? 30) * 1000;
+    setInterval(headCheck, headCheckInterval);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 17. HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
     function clearAllFilters() {
-      state.globalKeyword    = "";
-      state.statusFilter     = null;
-      state.categoryFilters  = [];
-      state.tableSearch      = "";
-      state.currentPage      = 1;
-      globalSearch.value     = "";
-      tableSearch.value      = "";
+      state.globalKeyword   = "";
+      state.statusFilter    = null;
+      state.categoryFilters = [];
+      state.tableSearch     = "";
+      globalSearch.value    = "";
+      // Clear DataTables internal search
+      if (state.dtInstance) {
+        state.dtInstance.search("").draw(false);
+      }
       render();
     }
 
-    function showError(msg) {
-      errorMsg.textContent = msg;
-      errorBanner.classList.remove("hidden");
-    }
-    function hideError() {
-      errorBanner.classList.add("hidden");
-    }
+    function showError(msg) { errorMsg.textContent = msg; errorBanner.classList.remove("hidden"); }
+    function hideError()    { errorBanner.classList.add("hidden"); }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 18. BOOT

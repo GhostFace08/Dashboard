@@ -17,8 +17,13 @@
   <!-- Lucide icons (CDN) -->
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 
-  <!-- Chart.js (CDN) -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <!-- Chart.js COMMENTED OUT — graph section removed -->
+  <!-- <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script> -->
+
+  <!-- DataTables -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/2.0.8/css/dataTables.dataTables.min.css" />
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
 
   <!-- Shared styles -->
   <link rel="stylesheet" href="../css/shared.css" />
@@ -53,8 +58,9 @@
         <h1 class="dash-h1">MCP DASHBOARD</h1>
       </div>
       <div class="dash-title-right">
-        <button id="btn-refresh" class="btn btn-outline-primary" title="Refresh dashboard and clear filters">
-          <i data-lucide="refresh-cw" style="width:14px;height:14px"></i> Refresh
+        <button id="btn-refresh" class="btn btn-outline-primary" title="Refresh data (preserves filters and timer)">
+          <i data-lucide="refresh-cw" style="width:14px;height:14px"></i>
+          <span id="btn-refresh-label">Refresh</span>
         </button>
         <div class="ui-refresh-pill">
           <span class="text-muted">UI Refresh</span>
@@ -135,12 +141,13 @@
         </button>
         <div id="kpis-body" class="section-body">
           <div class="kpi-row" id="kpi-cards">
-            <!-- Injected by JS: one card per category -->
+            <!-- Injected by JS: one card per category with count > 0 -->
           </div>
         </div>
       </section>
 
-      <!-- ── 3. Graph ── -->
+      <!-- ── 3. Graph — COMMENTED OUT ── -->
+      <!--
       <section class="dash-section">
         <button class="section-header" id="toggle-graph">
           Total Issues Graph
@@ -156,6 +163,7 @@
           </div>
         </div>
       </section>
+      -->
 
       <!-- ── 4. Evaluation Matrix ── -->
       <section class="dash-section">
@@ -196,65 +204,35 @@
                 </button>
               </div>
             </div>
-            <button id="btn-prev" class="btn btn-ghost">
-              <i data-lucide="chevron-left" style="width:16px;height:16px"></i> Previous
-            </button>
-            <button id="btn-next" class="btn btn-outline-primary">
-              Next <i data-lucide="chevron-right" style="width:16px;height:16px"></i>
-            </button>
           </div>
         </div>
 
-        <!-- Table controls -->
-        <div class="table-controls">
-          <div class="table-show-row">
-            <span class="text-muted" style="font-size:12px">Show</span>
-            <select id="show-entries" class="select" style="width:72px">
-              <option value="10">10</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-            </select>
-            <span class="text-muted" style="font-size:12px">Entries</span>
-          </div>
-          <div class="search-box" style="width:200px">
-            <input id="table-search" type="text" placeholder="Enter Filters" />
-            <i data-lucide="search" style="width:14px;height:14px"></i>
-          </div>
-        </div>
-
-        <!-- Table -->
+        <!-- Table controls: DataTables generates its own length/search but we keep the container -->
         <div class="table-wrap">
           <div class="overflow-x-auto">
-            <table class="data-table" id="issues-table">
+            <table id="issues-table" class="data-table display nowrap" style="width:100%">
               <thead>
                 <tr>
-                  <th data-col="srNo"><span class="th-inner">Sr. No. <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="source"><span class="th-inner">Source <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="issueId"><span class="th-inner">Issue ID <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="application"><span class="th-inner">Application <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="title"><span class="th-inner">Title <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="affectedEntities"><span class="th-inner">Affected Entities</span></th>
-                  <th data-col="severity"><span class="th-inner">Severity <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="category"><span class="th-inner">Category <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="description"><span class="th-inner">Description</span></th>
-                  <th data-col="status"><span class="th-inner">Status <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="startTime"><span class="th-inner">Start Time <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="endTime"><span class="th-inner">End Time <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th data-col="duration"><span class="th-inner">Duration <i data-lucide="arrow-up-down" style="width:10px;height:10px;opacity:.3"></i></span></th>
-                  <th style="text-align:center"><span class="th-inner">Action</span></th>
+                  <th>Sr. No.</th>
+                  <th>Source</th>
+                  <th>Issue ID</th>
+                  <th>Application</th>
+                  <th>Title</th>
+                  <th>Affected Entities</th>
+                  <th>Severity</th>
+                  <th>Category</th>
+                  <th>Description</th>
+                  <th>Status</th>
+                  <th>Start Time</th>
+                  <th>End Time</th>
+                  <th>Duration</th>
+                  <th>Action</th>
+                  <!-- hidden data column for row id -->
+                  <th>_id</th>
                 </tr>
               </thead>
-              <tbody id="issues-tbody">
-                <tr><td colspan="14" class="table-empty">Loading issues…</td></tr>
-              </tbody>
+              <tbody></tbody>
             </table>
-          </div>
-
-          <!-- Pagination footer -->
-          <div class="table-footer">
-            <span id="table-count" class="text-muted" style="font-family:'JetBrains Mono',monospace;font-size:10px">Showing 0–0 of 0 entries</span>
-            <div id="pagination" class="pagination"></div>
           </div>
         </div>
       </section>
@@ -277,6 +255,35 @@
     </div>
     <div class="modal-body">
       <div id="modal-fields" class="modal-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── KPI Popup Modal ── -->
+<div id="kpi-popup-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+  <div class="kpi-popup-box" onclick="event.stopPropagation()">
+    <div class="kpi-popup-header">
+      <span id="kpi-popup-title" class="kpi-popup-title-text"></span>
+      <button id="kpi-popup-close" class="btn-icon" aria-label="Close">
+        <i data-lucide="x" style="width:16px;height:16px"></i>
+      </button>
+    </div>
+    <div class="kpi-popup-table-wrap">
+      <table id="kpi-popup-table" class="data-table display nowrap" style="width:100%">
+        <thead>
+          <tr>
+            <th>Sr. No.</th>
+            <th>Source</th>
+            <th>Issue ID</th>
+            <th>Application</th>
+            <th>Title</th>
+            <th>Severity</th>
+            <th>Status</th>
+            <th>Start Time</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
   </div>
 </div>
