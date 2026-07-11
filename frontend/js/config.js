@@ -255,7 +255,7 @@ const SETTINGS_DEFAULTS = {
   periodicFetchTime:  "15 min",
   uiRefreshInterval:  1,
   landingView:        "dashboard",
-  periodicCheckTime:  30,
+  periodicCheckTime:  300,   // 5 min — how often the middleware checks the file
   defaultSort:        "startTime-desc",
   showAcknowledged:   false,
   showResolved:       true,

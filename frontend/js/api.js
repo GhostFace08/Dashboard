@@ -34,6 +34,8 @@
 
   const ENDPOINTS = {
     issues:       "/api/issues",          // GET
+    status:       "/api/status",          // GET  — middleware metadata
+    refresh:      "/api/refresh",         // POST — trigger Java fetch service
     config:       "/api/config",          // GET | PUT /:filename
     settingsSave: "/api/settings/save",   // POST — atomic multi-file save
     chat:         "/api/chat",            // POST (future)
@@ -249,6 +251,51 @@
   }
 
   /**
+   * getStatus()
+   * GET /api/status
+   * Returns middleware metadata: lastFileModifiedAt, lastDataUpdatedAt,
+   * lastCheckedAt, hasNewData.
+   * Throws on network error so callers can catch and silently ignore.
+   */
+  async function getStatus() {
+    const url = `${BASE_URL}${ENDPOINTS.status}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * triggerRefresh()
+   * POST /api/refresh
+   * Tells the middleware to schedule a file check in ~60 s (simulates triggering
+   * the Java fetch service).
+   * Returns { scheduled: true, checkIn: 60 } on success.
+   * Throws on network error so callers can catch and handle.
+   */
+  async function triggerRefresh() {
+    const url = `${BASE_URL}${ENDPOINTS.refresh}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * postChat(payload)
    * POST /api/chat → ChatMiddleware (future)
    * Currently returns fallback reply immediately.
@@ -289,10 +336,12 @@
     fetchWithFallback,
 
     getIssues,
+    getStatus,        // Change 3
+    triggerRefresh,   // Change 3
     getChatStats,
     getConfig,
     putConfig,
-    saveSettings,   // NEW
+    saveSettings,
     postChat,
   };
 

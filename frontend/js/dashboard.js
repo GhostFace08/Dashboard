@@ -52,6 +52,7 @@
       detailRow: null,
       copiedId:  null,
       isFetching: false,
+      isRefreshPending: false,   // Change 3 — guards duplicate manual refreshes
     };
 
     const MAX_RANGE_MS     = CFG.MAX_RANGE_MS;
@@ -148,15 +149,21 @@
         const rows = Utils.normalizeAllIssues(raw, state.mapping, state.categoryRules);
         state.availableCategories = [...new Set(rows.map(r => r.category).filter(Boolean))];
 
-        // fileModifiedAt: prefer server meta, fall back to max ts in payload
-        if (raw._lastModified) {
+        // Change 3 — timestamps come from server headers/payload, never new Date()
+        // X-File-Modified-At and X-Server-Time are set by the updated middleware
+        if (raw._fileModifiedAt) {
+          state.fileModifiedAt = new Date(raw._fileModifiedAt);
+        } else if (raw._lastModified) {
           state.fileModifiedAt = new Date(raw._lastModified);
         } else {
           const maxTs = rows.reduce((m, r) => Math.max(m, r.ts || 0), 0);
-          state.fileModifiedAt = maxTs ? new Date(maxTs) : new Date();
+          if (maxTs) state.fileModifiedAt = new Date(maxTs);
         }
-        state.dataUpdatedAt = new Date();
-        state.lastCheckedAt = new Date();
+        if (raw._serverTime) {
+          state.dataUpdatedAt = new Date(raw._serverTime);
+          state.lastCheckedAt = new Date(raw._serverTime);
+        }
+        // If middleware hasn't added headers yet, leave existing timestamps intact
 
         state.allIssues = rows;
         render();
@@ -177,20 +184,21 @@
       }
     }
 
-    async function headCheck() {
+    // Change 3 — replaces headCheck(). Calls /api/status; loads data only when
+    // the middleware signals hasNewData. Never touches user clock for timestamps.
+    async function pollStatus() {
       if (state.isFetching) return;
       try {
-        const resp = await fetch("../../backend/data/all_issues.json", { method: "HEAD", cache: "no-store" });
-        state.lastCheckedAt = new Date();
-        const lmStr = resp.headers.get("last-modified");
-        if (lmStr) {
-          const newTs = new Date(lmStr);
-          if (!state.fileModifiedAt || newTs > state.fileModifiedAt) {
-            state.fileModifiedAt = newTs;
-            await loadIssues();
-          }
+        const status = await API.getStatus();
+        // Always update lastCheckedAt from server time
+        if (status.lastCheckedAt) state.lastCheckedAt = new Date(status.lastCheckedAt);
+        // Only pull fresh data when the middleware says there is new data
+        if (status.hasNewData) {
+          if (status.lastFileModifiedAt) state.fileModifiedAt = new Date(status.lastFileModifiedAt);
+          if (status.lastDataUpdatedAt)  state.dataUpdatedAt  = new Date(status.lastDataUpdatedAt);
+          await loadIssues();
         }
-      } catch { /* ignore */ }
+      } catch { /* silently ignore network errors */ }
       updateStatusBar();
     }
 
@@ -837,9 +845,33 @@
 
     byId("btn-clear-filters").addEventListener("click", clearAllFilters);
 
-    // Change 4: refresh data only — timer and filters untouched
+    // Change 3 — manual refresh: triggers Java fetch via middleware, then waits
+    // for the deferred pollStatus() to detect and load the new file.
+    // Does NOT call loadIssues() directly. Countdown and filters are untouched.
     btnRefresh.addEventListener("click", async () => {
-      await loadIssues();
+      if (state.isFetching || state.isRefreshPending) return;
+      state.isRefreshPending = true;
+      setRefreshBusy(true);
+      try {
+        const result = await API.triggerRefresh();
+        if (result && result.scheduled) {
+          // Schedule a single status poll after the indicated delay (~60 s)
+          setTimeout(async () => {
+            await pollStatus();
+            state.isRefreshPending = false;
+            setRefreshBusy(false);
+          }, (result.checkIn || 60) * 1000);
+        } else {
+          // Middleware responded but didn't schedule — reset immediately
+          state.isRefreshPending = false;
+          setRefreshBusy(false);
+        }
+      } catch {
+        // Network error — reset state so button is usable again
+        state.isRefreshPending = false;
+        setRefreshBusy(false);
+      }
+      // Note: countdown untouched, filters untouched
     });
 
     uiRefreshInput.addEventListener("change", e => {
@@ -888,8 +920,10 @@
       }, 1000);
     }
 
-    const headCheckInterval = (CFG.SETTINGS_DEFAULTS?.periodicCheckTime ?? 30) * 1000;
-    setInterval(headCheck, headCheckInterval);
+    // Change 3 — poll /api/status at the configured interval (default 300 s / 5 min).
+    // headCheck() is removed; pollStatus() owns all data-availability detection.
+    const CHECK_INTERVAL_MS = (CFG.SETTINGS_DEFAULTS?.periodicCheckTime ?? 300) * 1000;
+    setInterval(pollStatus, CHECK_INTERVAL_MS);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 17. HELPERS
@@ -913,7 +947,7 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     await loadAllData();
-    headCheck();
+    pollStatus();      // Change 3 — initial status check on boot
     resetCountdown();
     Utils.refreshIcons();
   });
