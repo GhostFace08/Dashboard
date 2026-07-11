@@ -209,19 +209,18 @@
             <div class="monitor-summary-right">
               <span class="monitor-sync-label">Last Sync: ${esc(def.lastSync || "—")}</span>
               <span class="status-badge ${statusCls}"><span class="dot"></span>${label}</span>
-              <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px">
-                <i data-lucide="plug" style="width:12px;height:12px"></i> Test
-              </button>
+              <div class="monitor-enable-test-row">
+                <label class="monitor-inline-toggle">
+                  <button class="toggle-switch on" data-on="true" data-tool-toggle="${t.id}"><span class="toggle-thumb"></span></button>
+                  <span class="monitor-inline-label">Enable</span>
+                </label>
+                <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px">
+                  <i data-lucide="plug" style="width:12px;height:12px"></i> Test
+                </button>
+              </div>
             </div>
           </div>
           <div class="scard-body grid-2" style="padding:16px">
-            <div class="toggle-row">
-              <div class="toggle-info">
-                <p class="toggle-label">Enable Service</p>
-                <p class="toggle-desc">When disabled, excluded from collection and dashboard.</p>
-              </div>
-              <button class="toggle-switch on" data-on="true" data-tool-toggle="${t.id}"><span class="toggle-thumb"></span></button>
-            </div>
             <label class="sfield">
               <span class="sfield-label">Base URL</span>
               <input type="text" class="input input-mono" data-tool-base="${t.id}" value="${esc(def.baseUrl || "")}" />
@@ -280,13 +279,6 @@
         <div class="scard">
           <div class="scard-head"><h3 class="scard-title">Basic Configuration</h3><p class="scard-desc">Connection parameters for this monitoring platform.</p></div>
           <div class="scard-body grid-2">
-            <div class="toggle-row" style="grid-column:1/-1">
-              <div class="toggle-info">
-                <p class="toggle-label">Enable Service</p>
-                <p class="toggle-desc">When disabled, this provider is excluded from collection and the dashboard.</p>
-              </div>
-              <button class="toggle-switch on" data-on="true" data-tool-toggle="${t.id}"><span class="toggle-thumb"></span></button>
-            </div>
             <label class="sfield">
               <span class="sfield-label">Base URL</span>
               <input type="text" class="input input-mono" data-tool-base="${t.id}" value="${esc(def.baseUrl || "")}" />
@@ -301,15 +293,19 @@
             </label>
             <div class="sfield">
               <span class="sfield-label">Connection Status</span>
-              <div class="flex items-center gap-2 mt-1">
+              <div class="monitor-inline-status-row">
                 <span class="status-badge connected"><span class="dot"></span>Connected</span>
                 <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px"><i data-lucide="plug" style="width:12px;height:12px"></i> Test Connection</button>
+                <label class="monitor-inline-toggle" style="margin-left:auto">
+                  <button class="toggle-switch on" data-on="true" data-tool-toggle="${t.id}"><span class="toggle-thumb"></span></button>
+                  <span class="monitor-inline-label">Enable</span>
+                </label>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="scard" id="live-auth-${t.id}" style="display:none">
+        <div class="scard live-auth-card" id="live-auth-${t.id}" data-live-active="false">
           <div class="scard-head"><h3 class="scard-title">Live Authentication</h3><p class="scard-desc">Credentials used while Collection Mode is set to Live.</p></div>
           <div class="scard-body grid-2">
             <label class="sfield"><span class="sfield-label">Authentication Type</span>
@@ -332,7 +328,11 @@
             seg.querySelectorAll(".seg-btn").forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
             const liveAuth = $(`live-auth-${t.id}`);
-            if (liveAuth) liveAuth.style.display = btn.dataset.val === "live" ? "" : "none";
+            // CHANGE 4d: toggle data-live-active instead of display show/hide
+            // Card is always visible; opacity + pointer-events controlled by CSS
+            if (liveAuth) {
+              liveAuth.dataset.liveActive = btn.dataset.val === "live" ? "true" : "false";
+            }
             markDirty();
           });
         });

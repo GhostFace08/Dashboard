@@ -375,6 +375,29 @@ html.dark .matrix-table td { border-color: rgba(255,255,255,.12); }
   font-size: 11px;
   font-weight: 700;
 }
+
+/* Matrix cell state classes — theme-aware */
+.matrix-cell-red {
+  background: rgba(229, 83, 75, 0.18);
+  color: #e5534b;
+}
+html:not(.dark) .matrix-cell-red {
+  background: #fde2e1;
+  color: #b91c1c;
+}
+.matrix-cell-green {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+html:not(.dark) .matrix-cell-green {
+  background: #dcfce7;
+  color: #15803d;
+}
+.matrix-cell-empty {
+  background: transparent;
+  color: var(--foreground);
+}
+
 .matrix-empty { color: var(--muted-foreground); font-size: 12px; padding: 16px; }
 
 /* ── Table wrapper ────────────────────────────────────────────────────────── */
@@ -414,22 +437,27 @@ html.dark .matrix-table td { border-color: rgba(255,255,255,.12); }
   font-size: 13px;
 }
 
-/* Table cell widths */
-.data-table td:nth-child(5),  /* title */
-.data-table td:nth-child(9) { /* description */
-  max-width: 180px;
-  word-break: break-word;
-  white-space: normal;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--foreground);
-}
-.data-table td:nth-child(6) { /* affectedEntities */
-  max-width: 130px;
-  word-break: break-word;
-  white-space: normal;
-}
+/* Table cell widths — nowrap catch-all first, then wrappable column overrides */
 .data-table td { white-space: nowrap; }
+
+/* Main table — wrappable columns */
+#issues-table td:nth-child(5),   /* Title */
+#issues-table td:nth-child(6),   /* Affected Entities */
+#issues-table td:nth-child(8),   /* Category */
+#issues-table td:nth-child(9) {  /* Description */
+  white-space: normal;
+  word-break: break-word;
+  min-width: 140px;
+  max-width: 260px;
+}
+
+/* KPI popup table — Title column wrappable */
+#kpi-popup-table td:nth-child(5) {
+  white-space: normal;
+  word-break: break-word;
+  min-width: 160px;
+  max-width: 280px;
+}
 
 /* Action cell buttons */
 .action-cell { display: flex; align-items: center; justify-content: center; gap: 8px; }
@@ -497,7 +525,8 @@ html.dark .matrix-table td { border-color: rgba(255,255,255,.12); }
 
 .kpi-popup-table-wrap {
   flex: 1;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   padding: 16px;
 }
 

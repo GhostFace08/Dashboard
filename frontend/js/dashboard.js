@@ -418,7 +418,7 @@
         // Rebuild clean table skeleton
         const wrap = byId("kpi-popup-table-wrap");
         wrap.innerHTML = `
-          <table id="kpi-popup-table" class="data-table display nowrap" style="width:100%">
+          <table id="kpi-popup-table" class="data-table display" style="width:100%">
             <thead>
               <tr>
                 <th>Sr. No.</th><th>Source</th><th>Issue ID</th><th>Application</th>
@@ -449,9 +449,14 @@
       state.kpiDtInstance = jQ("#kpi-popup-table").DataTable({
         data: rowData,
         columns: [
-          { title: "Sr. No." }, { title: "Source" }, { title: "Issue ID" },
-          { title: "Application" }, { title: "Title" }, { title: "Severity" },
-          { title: "Status" }, { title: "Start Time" },
+          { title: "Sr. No.",     width: "60px"  },
+          { title: "Source",      width: "100px" },
+          { title: "Issue ID",    width: "110px" },
+          { title: "Application", width: "120px" },
+          { title: "Title",       width: "200px" },
+          { title: "Severity",    width: "90px"  },
+          { title: "Status",      width: "90px"  },
+          { title: "Start Time",  width: "140px" },
         ],
         pageLength: 10,
         lengthMenu: [10, 25, 50],
@@ -466,8 +471,17 @@
         },
       });
 
+      // Show modal FIRST so the DOM has real dimensions, then adjust columns.
+      // Without this, scrollX DataTables initialised in a hidden container
+      // miscalculates widths and header/body misalign until a redraw is forced.
       kpiPopupOverlay.classList.remove("hidden");
       document.body.classList.add("modal-open");
+      // Use setTimeout(0) to let the browser paint the visible modal before measuring
+      setTimeout(() => {
+        if (state.kpiDtInstance) {
+          state.kpiDtInstance.columns.adjust().draw(false);
+        }
+      }, 0);
       Utils.refreshIcons();
     }
 
