@@ -48,7 +48,8 @@
 
   let activeSection    = "monitoring";
   let dirty            = false;
-  let activeMonitorTab = "all";
+  // "all" tab is hidden; default to the first tool id (set properly in buildMonitoringSection)
+  let activeMonitorTab = "";
   let activeCatTab     = "all";
   let activeMapTab     = CFG.TOOLS[0]?.id || "dynatrace";
 
@@ -189,61 +190,15 @@
     const toolTabsHTML = CFG.TOOLS.map(t =>
       `<button class="tab" data-monitor-tab="${t.id}">${esc(t.name)}</button>`
     ).join("");
-    tabsEl.innerHTML = `<button class="tab active" data-monitor-tab="all">All Services</button>${toolTabsHTML}`;
+    // ALL SERVICES TAB COMMENTED OUT — not shown on UI for now
+    // tabsEl.innerHTML = `<button class="tab active" data-monitor-tab="all">All Services</button>${toolTabsHTML}`;
+    tabsEl.innerHTML = toolTabsHTML;
 
     const SVC = CFG.SERVICE_DEFAULTS || {};
-    panelAll.innerHTML = CFG.TOOLS.map(t => {
-      const def       = SVC[t.id] || {};
-      const statusCls = t.status === "online" ? "connected" : t.status === "degraded" ? "warning" : "error";
-      const label     = t.status === "online" ? "Connected" : t.status === "degraded" ? "Degraded" : "Error";
-      return `
-        <div class="monitor-summary-card" data-tool="${t.id}">
-          <div class="monitor-summary-head">
-            <div class="monitor-summary-left">
-              <div class="monitor-tool-badge" style="background:${t.color}22;color:${t.color}">${esc(t.shortName)}</div>
-              <div class="min-w-0">
-                <p class="monitor-tool-name">${esc(t.name)}</p>
-                <p class="monitor-tool-desc">${esc(t.description)}</p>
-              </div>
-            </div>
-            <div class="monitor-summary-right">
-              <span class="monitor-sync-label">Last Sync: ${esc(def.lastSync || "—")}</span>
-              <span class="status-badge ${statusCls}"><span class="dot"></span>${label}</span>
-              <div class="monitor-enable-test-row">
-                <label class="monitor-inline-toggle">
-                  <button class="toggle-switch on" data-on="true" data-tool-toggle="${t.id}"><span class="toggle-thumb"></span></button>
-                  <span class="monitor-inline-label">Enable</span>
-                </label>
-                <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px">
-                  <i data-lucide="plug" style="width:12px;height:12px"></i> Test
-                </button>
-              </div>
-            </div>
-          </div>
-          <div class="scard-body grid-2" style="padding:16px">
-            <label class="sfield">
-              <span class="sfield-label">Base URL</span>
-              <input type="text" class="input input-mono" data-tool-base="${t.id}" value="${esc(def.baseUrl || "")}" />
-            </label>
-            <label class="sfield">
-              <span class="sfield-label">API Endpoint</span>
-              <input type="text" class="input input-mono" data-tool-ep="${t.id}" value="${esc(def.endpoint || "")}" />
-            </label>
-            <label class="sfield">
-              <span class="sfield-label">Request Timeout (s)</span>
-              <input type="number" class="input input-mono" data-tool-timeout="${t.id}" value="30" />
-            </label>
-            <div class="sfield">
-              <span class="sfield-label">Connection Status</span>
-              <div class="flex items-center gap-2 mt-1">
-                <span class="status-badge ${statusCls}"><span class="dot"></span>${label}</span>
-                <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px"><i data-lucide="plug" style="width:12px;height:12px"></i> Test Connection</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    }).join("");
+
+    // ALL SERVICES PANEL COMMENTED OUT — not shown on UI for now
+    // panelAll.innerHTML = CFG.TOOLS.map(t => { ... }).join("");
+    panelAll.style.display = "none"; // keep element in DOM but never visible
 
     // Per-tool detailed panels
     const sec = $("sec-monitoring");
@@ -264,17 +219,19 @@
           </div>
         </div>
 
+        <!-- COLLECTION MODE TOGGLE COMMENTED OUT — defaulting to Live, no toggle shown on UI
         <div class="collection-mode-wrap">
           <p class="sfield-label">Collection Mode</p>
           <div class="segmented" data-seg="mode-${t.id}">
-            <button class="seg-btn active" data-val="periodic">Periodic (default)</button>
-            <button class="seg-btn" data-val="live">Live</button>
+            <button class="seg-btn" data-val="periodic">Periodic (default)</button>
+            <button class="seg-btn active" data-val="live">Live</button>
           </div>
           <div class="banner banner-info">
             <i data-lucide="info" style="width:16px;height:16px;flex-shrink:0"></i>
             <span class="banner-text">Collection Mode controls how data is retrieved. It does <strong>not</strong> affect dashboard refresh interval or client-side polling.</span>
           </div>
         </div>
+        -->
 
         <div class="scard">
           <div class="scard-head"><h3 class="scard-title">Basic Configuration</h3><p class="scard-desc">Connection parameters for this monitoring platform.</p></div>
@@ -305,7 +262,7 @@
           </div>
         </div>
 
-        <div class="scard live-auth-card" id="live-auth-${t.id}" data-live-active="false">
+        <div class="scard live-auth-card" id="live-auth-${t.id}" data-live-active="true">
           <div class="scard-head"><h3 class="scard-title">Live Authentication</h3><p class="scard-desc">Credentials used while Collection Mode is set to Live.</p></div>
           <div class="scard-body grid-2">
             <label class="sfield"><span class="sfield-label">Authentication Type</span>
@@ -320,24 +277,20 @@
       `;
       sec.appendChild(panel);
 
-      // Wire collection mode segmented control
-      const seg = panel.querySelector(`[data-seg="mode-${t.id}"]`);
-      if (seg) {
-        seg.querySelectorAll(".seg-btn").forEach(btn => {
-          btn.addEventListener("click", () => {
-            seg.querySelectorAll(".seg-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            const liveAuth = $(`live-auth-${t.id}`);
-            // CHANGE 4d: toggle data-live-active instead of display show/hide
-            // Card is always visible; opacity + pointer-events controlled by CSS
-            if (liveAuth) {
-              liveAuth.dataset.liveActive = btn.dataset.val === "live" ? "true" : "false";
-            }
-            markDirty();
-          });
-        });
-      }
+      // COLLECTION MODE WIRING COMMENTED OUT — toggle strip hidden, mode permanently Live
+      // const seg = panel.querySelector(`[data-seg="mode-${t.id}"]`);
+      // if (seg) { seg.querySelectorAll(".seg-btn").forEach(btn => { ... }); }
     });
+
+    // Activate the first tool tab by default (All Services is hidden)
+    if (CFG.TOOLS.length > 0) {
+      const firstId = CFG.TOOLS[0].id;
+      activeMonitorTab = firstId;
+      const firstTabBtn = tabsEl.querySelector(`[data-monitor-tab="${firstId}"]`);
+      if (firstTabBtn) firstTabBtn.classList.add("active");
+      const firstPanel = $(`monitor-panel-${firstId}`);
+      if (firstPanel) firstPanel.classList.add("active");
+    }
 
     // Wire monitor tabs
     tabsEl.addEventListener("click", e => {
@@ -346,7 +299,7 @@
       activeMonitorTab = btn.dataset.monitorTab;
       tabsEl.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
       btn.classList.add("active");
-      panelAll.classList.toggle("active", activeMonitorTab === "all");
+      // panelAll is hidden — no need to toggle it
       CFG.TOOLS.forEach(t => {
         const p = $(`monitor-panel-${t.id}`);
         if (p) p.classList.toggle("active", activeMonitorTab === t.id);

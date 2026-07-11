@@ -558,14 +558,15 @@
         const catOpen  = allCols.reduce((s, x) => s + x.open,  0);
 
         html += `<tr><td class="cat-col" style="font-family:var(--font-mono);font-size:11px">${Utils.escapeHtml(cat)}<br>
-          <span style="font-size:10px;color:#555">${catOpen}/${catTotal}</span></td>`;
+          <span style="font-size:10px;color:var(--muted-foreground)">${catOpen}/${catTotal}</span></td>`;
 
         visible.forEach(c => {
           const { open, total } = cellCounts(filtered, cat, c.app, c.tool);
-          const closed = Math.max(0, total - open);
-          const bg = open > 0 ? "#fde2e1" : total > 0 ? "#f3f4f6" : "#e6f9ed";
-          const fg = (open > 0 || total > 0) ? "#111827" : "#065f46";
-          html += `<td class="matrix-cell" style="background:${bg};color:${fg}">${closed}\\${open}\\${total}</td>`;
+          let cellClass;
+          if (open > 0)        cellClass = "matrix-cell-red";
+          else if (total > 0)  cellClass = "matrix-cell-green";
+          else                 cellClass = "matrix-cell-empty";
+          html += `<td class="matrix-cell ${cellClass}">${open}/${total}</td>`;
         });
         html += "</tr>";
       });
