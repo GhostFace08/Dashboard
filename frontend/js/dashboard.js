@@ -133,10 +133,11 @@
       await loadIssues();
     }
 
-    async function loadIssues() {
+    async function loadIssues(silent = false) {
       if (state.isFetching) return;
       state.isFetching = true;
-      setRefreshBusy(true);
+      // Only show the busy spinner for explicit user-triggered loads, not background polls
+      if (!silent) setRefreshBusy(true);
 
       try {
         const raw = await API.getIssues();
@@ -150,7 +151,6 @@
         state.availableCategories = [...new Set(rows.map(r => r.category).filter(Boolean))];
 
         // Change 3 — timestamps come from server headers/payload, never new Date()
-        // X-File-Modified-At and X-Server-Time are set by the updated middleware
         if (raw._fileModifiedAt) {
           state.fileModifiedAt = new Date(raw._fileModifiedAt);
         } else if (raw._lastModified) {
@@ -163,13 +163,24 @@
           state.dataUpdatedAt = new Date(raw._serverTime);
           state.lastCheckedAt = new Date(raw._serverTime);
         }
-        // If middleware hasn't added headers yet, leave existing timestamps intact
 
         state.allIssues = rows;
-        render();
+
+        if (silent && state.dtInstance) {
+          // Silent background update: refresh only the DataTable rows and status bar.
+          // Preserves: current page, scroll position, sort order, open modals,
+          // filter state, KPI cards, status cards. User sees no visual jump.
+          const filtered = getFilteredIssues();
+          state.currentFilteredRows = filtered;
+          state.dtInstance.clear().rows.add(buildRowData(filtered)).draw(false);
+          updateStatusBar();
+        } else {
+          // Full render for boot load or explicit user-triggered refresh
+          render();
+        }
       } finally {
         state.isFetching = false;
-        setRefreshBusy(false);
+        if (!silent) setRefreshBusy(false);
       }
     }
 
@@ -187,21 +198,20 @@
     // Change 3 — replaces headCheck(). Calls /api/status; loads data only when
     // the middleware signals hasNewData. Never touches user clock for timestamps.
     //
-    // syncOnly=true: called once at boot after loadAllData() to sync lastCheckedAt
-    // into the status bar without triggering another data load.
-    async function pollStatus(syncOnly = false) {
+    // syncOnly=true  → boot call: sync lastCheckedAt only, never load data
+    // explicit=true  → manual refresh: if new data, do full render (not silent)
+    async function pollStatus(syncOnly = false, explicit = false) {
       if (state.isFetching) return;
-      // Don't compete with a pending manual refresh — it has its own deferred pollStatus()
-      if (state.isRefreshPending && !syncOnly) return;
+      if (state.isRefreshPending && !syncOnly && !explicit) return;
       try {
         const status = await API.getStatus();
-        // Always update lastCheckedAt from server — this is the only place it's set on the client
         if (status.lastCheckedAt) state.lastCheckedAt = new Date(status.lastCheckedAt);
-        // On syncOnly boot call: just update the status bar, never load data
         if (!syncOnly && status.hasNewData) {
           if (status.lastFileModifiedAt) state.fileModifiedAt = new Date(status.lastFileModifiedAt);
           if (status.lastDataUpdatedAt)  state.dataUpdatedAt  = new Date(status.lastDataUpdatedAt);
-          await loadIssues();
+          // explicit (manual refresh): full render so user sees the update clearly
+          // background poll: silent update — no page jump, no pagination reset
+          await loadIssues(!explicit);
         }
       } catch { /* silently ignore network errors */ }
       updateStatusBar();
@@ -862,7 +872,7 @@
         if (result && result.scheduled) {
           // Schedule a single status poll after the indicated delay (~60 s)
           setTimeout(async () => {
-            await pollStatus();
+            await pollStatus(false, true);  // explicit=true → full render on new data
             state.isRefreshPending = false;
             setRefreshBusy(false);
           }, (result.checkIn || 60) * 1000);
