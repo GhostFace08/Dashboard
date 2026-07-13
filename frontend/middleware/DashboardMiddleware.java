@@ -136,7 +136,11 @@ public class DashboardMiddleware {
             lastCheckedAt = Instant.now();
 
             if (lastFileTimestamp == null || fileInstant.isAfter(lastFileTimestamp)) {
-                lastFileTimestamp = fileInstant;
+                // Do NOT update lastFileTimestamp here.
+                // Only IssuesHandler advances it after the frontend actually consumes
+                // the file via GET /api/issues.  If we update it now, a second
+                // checkFile() between this moment and the serve would see
+                // fileInstant == lastFileTimestamp and silently drop the signal.
                 hasNewData.set(true);
                 LOG.info("checkFile → new data detected (file ts: " + toIso(fileInstant) + ")");
             }

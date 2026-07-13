@@ -925,12 +925,32 @@
         updateStatusBar(); // direct DOM write — no recreation of interval-breaking elements
         if (state.countdown <= 0) {
           state.countdown = Math.max(1, state.uiRefreshMin) * 60;
-          // Refresh durations for Active issues
+          // Recalculate durations for Active issues in state only.
+          // Nothing else changes — status cards, KPIs, matrix are untouched.
           state.allIssues = state.allIssues.map(r => {
             if (r.status !== "Active" || !r.ts) return r;
             return { ...r, duration: Utils.formatDuration(new Date(r.ts), null) };
           });
-          render();
+          // Patch only the duration cells visible in the DataTable right now.
+          // Col 12 = Duration, col 14 = hidden _id.
+          // No draw(), no clear(), no rows.add() — zero DataTables rebuild.
+          if (state.dtInstance) {
+            const idToDuration = new Map(
+              state.allIssues
+                .filter(r => r.status === "Active")
+                .map(r => [r.id, r.duration])
+            );
+            state.dtInstance.rows({ page: "current" }).every(function () {
+              const rowData = this.data();
+              const id = rowData[14]; // hidden _id column
+              if (!idToDuration.has(id)) return;
+              const cell = this.cell(this.index(), 12).node();
+              if (cell) {
+                const span = cell.querySelector("span") || cell;
+                span.textContent = idToDuration.get(id);
+              }
+            });
+          }
         }
       }, 1000);
     }
