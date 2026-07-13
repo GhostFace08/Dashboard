@@ -153,10 +153,27 @@ public class DashboardMiddleware {
         LOG.info("Issues file  : " + ISSUES_FILE);
         LOG.info("Check interval: " + PERIODIC_CHECK_SECONDS + " s");
 
-        // Start the background periodic file-check (Change 3)
+        // Seed lastFileTimestamp silently at startup so the first periodic checkFile()
+        // does not falsely detect the existing file as "new data".
+        // We read the mod-time here WITHOUT setting hasNewData — the frontend will
+        // load the file via its own boot GET /api/issues, which will set lastFileTimestamp.
+        try {
+            if (Files.exists(ISSUES_FILE)) {
+                lastFileTimestamp = Files.getLastModifiedTime(ISSUES_FILE).toInstant();
+                LOG.info("Startup seed: lastFileTimestamp = " + toIso(lastFileTimestamp));
+            }
+        } catch (IOException e) {
+            LOG.warning("Startup seed failed: " + e.getMessage());
+        }
+
+        // Start the background periodic file-check (Change 3).
+        // initialDelay = PERIODIC_CHECK_SECONDS (NOT 0) — first check fires after
+        // one full interval, not immediately.  Prevents a race where checkFile()
+        // runs before the frontend's initial GET /api/issues and spuriously sets
+        // hasNewData=true on the file that was just seeded above.
         scheduler.scheduleAtFixedRate(
                 DashboardMiddleware::checkFile,
-                0,                        // run immediately on start
+                PERIODIC_CHECK_SECONDS,   // first check after one full interval
                 PERIODIC_CHECK_SECONDS,
                 TimeUnit.SECONDS
         );
@@ -237,13 +254,15 @@ public class DashboardMiddleware {
             if (Files.exists(ISSUES_FILE)) {
                 String json = Files.readString(ISSUES_FILE, StandardCharsets.UTF_8);
 
-                // Change 3 — update metadata
+                // Change 3 — update metadata.
+                // lastCheckedAt is intentionally NOT updated here — only checkFile()
+                // owns it.  Mixing it here caused the status bar to show the data-serve
+                // time as the "last checked" time, which is semantically wrong.
                 FileTime ft = Files.getLastModifiedTime(ISSUES_FILE);
                 Instant fileInstant = ft.toInstant();
-                lastFileTimestamp  = fileInstant;
-                lastDataUpdatedAt  = serverNow;
-                lastCheckedAt      = serverNow;
-                hasNewData.set(false);   // frontend consumed the data
+                lastFileTimestamp  = fileInstant;   // when the file was last written
+                lastDataUpdatedAt  = serverNow;     // when the frontend loaded it
+                hasNewData.set(false);              // frontend consumed the data
 
                 // Add server-time response headers
                 ex.getResponseHeaders().set("X-File-Modified-At", toIso(fileInstant));

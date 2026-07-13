@@ -186,14 +186,19 @@
 
     // Change 3 — replaces headCheck(). Calls /api/status; loads data only when
     // the middleware signals hasNewData. Never touches user clock for timestamps.
-    async function pollStatus() {
+    //
+    // syncOnly=true: called once at boot after loadAllData() to sync lastCheckedAt
+    // into the status bar without triggering another data load.
+    async function pollStatus(syncOnly = false) {
       if (state.isFetching) return;
+      // Don't compete with a pending manual refresh — it has its own deferred pollStatus()
+      if (state.isRefreshPending && !syncOnly) return;
       try {
         const status = await API.getStatus();
-        // Always update lastCheckedAt from server time
+        // Always update lastCheckedAt from server — this is the only place it's set on the client
         if (status.lastCheckedAt) state.lastCheckedAt = new Date(status.lastCheckedAt);
-        // Only pull fresh data when the middleware says there is new data
-        if (status.hasNewData) {
+        // On syncOnly boot call: just update the status bar, never load data
+        if (!syncOnly && status.hasNewData) {
           if (status.lastFileModifiedAt) state.fileModifiedAt = new Date(status.lastFileModifiedAt);
           if (status.lastDataUpdatedAt)  state.dataUpdatedAt  = new Date(status.lastDataUpdatedAt);
           await loadIssues();
@@ -947,8 +952,10 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     await loadAllData();
-    // Change 3 — periodic setInterval(pollStatus) below handles all data-refresh checks.
-    // No boot pollStatus() needed — loadAllData() already loaded the initial data.
+    // Sync lastCheckedAt into the status bar without triggering another data load.
+    // syncOnly=true means: update timestamps from /api/status but ignore hasNewData.
+    // This populates "Last Data Checked At" correctly on first render.
+    await pollStatus(true);
     resetCountdown();
     Utils.refreshIcons();
   });
