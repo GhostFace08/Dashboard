@@ -947,7 +947,8 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     await loadAllData();
-    pollStatus();      // Change 3 — initial status check on boot
+    // Change 3 — periodic setInterval(pollStatus) below handles all data-refresh checks.
+    // No boot pollStatus() needed — loadAllData() already loaded the initial data.
     resetCountdown();
     Utils.refreshIcons();
   });

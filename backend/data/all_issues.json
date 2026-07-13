@@ -75657,7 +75657,7 @@
           "severity": "Trouble",
           "category": "Switch",
           "eventType": "Interface Utilization",
-          "status": "Trouble",
+          "status": "Clear",
           "message": "Interface utilization threshold violated.",
           "modTime": "08 Jul 2026 03:51:30 PM IST"
         },
